@@ -3,11 +3,12 @@
 The smallest real Arcium computation — `x + 10` — wired end to end before any
 of this machinery is pointed at money.
 
-**Status: written, compiled, and deployed locally. Not yet executed on a
-cluster.** Running it needs either Docker (for `arcium localnet`) or a deployed
-MXE on Arcium devnet; see [Running it](#running-it). The test skips rather than
-passes when no cluster is reachable, because a green tick that proves nothing is
-worse than a skip.
+**Status: deployed to Arcium devnet with a live MXE. The computation has not
+run yet** — the circuit upload stalls on public-RPC rate limits. See
+[Where this is blocked](#where-this-is-blocked).
+
+The test skips rather than passes when no cluster is reachable, because a green
+tick that proves nothing is worse than a skip.
 
 ---
 
@@ -169,11 +170,59 @@ Getting `42` back only proves arithmetic. The test also asserts:
 - the result arrives via `awaitComputationFinalization` — i.e. from the cluster,
   not from anything running locally.
 
+## Devnet deployment
+
+Done, on Solana devnet against Arcium's devnet cluster (offset `456`):
+
+| Item | Value |
+|------|-------|
+| Program | `HVEKKMWwjLaQyXqkMGGshNGXa3Wm1PCSUnRaB6vAnB99` |
+| MXE init | [`3z5eQp3H…hCre9q`](https://explorer.solana.com/tx/3z5eQp3HML7wXyfuxbut8j84WA9tafkUJ91a3TNXuBJihpYAfqseH3T8tRWn7oU5MxHYJ8SnmtvGRpUYgDhCre9q?cluster=devnet) |
+| Key recovery material | [`2uVEb4P9…FiUY7`](https://explorer.solana.com/tx/2uVEb4P9mZ8Y8CFixhyvq8BRdDR7fgCjqhnF3NvqoNn2wxPJD2jasu4vEnMnXoR8oA55rhKATY8gr7c2uC6FiUY7?cluster=devnet) |
+| Recovery set size | 4 |
+
+So the real Arcium devnet cluster has generated and distributed key material for
+this MXE. That is the part that needed a live network, and it worked.
+
+Deploy note: an upgradeable program reserves **twice** the binary size for its
+data account, so a 466 KB program wants ~6.5 SOL. Passing
+`--max-len <exact size>` allocates 1x instead (~3.25 SOL) at the cost of never
+being able to upgrade to a larger binary — fine for a disposable demo, wrong for
+the vault.
+
+## Where this is blocked
+
+`uploadCircuit` writes the 62 KB circuit to chain in chunks. At 900 bytes per
+transaction that is ~70 transactions in quick succession, and
+`api.devnet.solana.com` rate-limits it into the ground: continuous HTTP 429s,
+then a stall with no further transactions landing.
+
+This is exactly the failure the Arcium docs warn about — *"Solana's default RPC
+endpoints can drop transactions during deployment"* — and it is a property of
+the endpoint, not of the code.
+
+**To finish, one of:**
+
+1. **A devnet RPC endpoint with a real rate limit** (Helius, QuickNode, Alchemy;
+   free tiers are sufficient). Then:
+
+   ```bash
+   ANCHOR_PROVIDER_URL=<your-devnet-rpc>    ANCHOR_WALLET=~/.config/solana/summit-devnet.json    ARCIUM_CLUSTER_OFFSET=456    npx ts-mocha -p ./tsconfig.json -t 300000 'tests/hello-arcium.ts'
+   ```
+
+2. **A working Docker engine**, then `arcium localnet` and `arcium test`. Docker
+   Desktop's UI starts but its engine does not respond on this machine, so the
+   local path is unavailable without intervention.
+
+Also worth knowing: devnet SOL is needed and `solana airdrop` is currently
+rate-limited too, so the wallet cannot be topped up from the CLI. The web faucet
+or an RPC provider's faucet is the fallback.
+
 ## Open item
 
-Until this has actually executed on a cluster, the claim "computation runs
-through Arcium" is **compiled and wired, not demonstrated**. The circuit
-compiles, the programs build, the accounts resolve, and the test is written —
-but the loop has not closed. That gap is why the test skips instead of passing,
-and it should be closed before Phase 8 builds persistent encrypted state on top
-of it.
+Until the computation actually executes, the claim "computation runs through
+Arcium" is **deployed and wired, not demonstrated**. The circuit compiles, the
+programs build, the MXE is live with real cluster key material, and the test is
+written — but the loop has not closed. That gap is why the test skips instead of
+passing, and it should close before Phase 8 builds persistent encrypted state on
+top of it.

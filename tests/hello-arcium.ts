@@ -71,7 +71,11 @@ describe("arcium — hello world", function () {
   };
 
   it("computes x + 10 without revealing x", async function () {
-    const owner = readKeypair(`${os.homedir()}/.config/solana/id.json`);
+    // Whatever wallet the provider is configured with — on devnet that is the
+    // MXE authority, which is not necessarily ~/.config/solana/id.json.
+    const owner = readKeypair(
+      process.env.ANCHOR_WALLET ?? `${os.homedir()}/.config/solana/id.json`
+    );
 
     // No cluster reachable means no point pretending this passed.
     let arciumEnv: ReturnType<typeof getArciumEnv>;
@@ -200,7 +204,9 @@ describe("arcium — hello world", function () {
       program.programId,
       fs.readFileSync("build/add_ten.arcis"),
       true,
-      500,
+      // Chunk size. Larger means fewer transactions, which matters a lot on a
+      // rate-limited public RPC: the circuit is 62 KB.
+      900,
       {
         skipPreflight: true,
         preflightCommitment: "confirmed",
