@@ -11,7 +11,8 @@
     "@coral-xyz/anchor": "^0.32.0",
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.98.0",
-    "@silentedge/config": "workspace:*"
+    "@silentedge/config": "workspace:*",
+    "@silentedge/types": "workspace:*"
   },
   "devDependencies": {
     "@types/chai": "^4.3.20",

@@ -87,7 +87,7 @@ test fixture holding a private key, and it has no place in the app bundle.
 
 ## Coverage
 
-Mapped to THREAT_MODEL.md §9. 27 tests.
+Mapped to THREAT_MODEL.md §9. 42 tests.
 
 | Area | Covered |
 |------|---------|
@@ -101,6 +101,21 @@ Mapped to THREAT_MODEL.md §9. 27 tests.
 | Structural | `withdraw` account list pinned — fails if a future phase adds a dependency |
 | Layout | vault status byte offset pinned, since the web app reads it directly |
 | Amounts | `toBaseUnits` — float-lossy cases, over-precision refusal, malformed input |
+| Strategy | price parsing, rule ordering, size caps, normalization to the four circuit fields, never-true sentinels |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
 pinning, oracle guards, swap execution. Those arrive with their phases.
+
+## Strategy privacy, checked by hand
+
+The builder holds plaintext, so the claim that it stays in the browser is worth
+checking rather than asserting. After saving a draft, with the page driven
+through a real browser:
+
+- `localStorage` held only `walletName` — no strategy values, plain or normalized
+- `sessionStorage` and cookies held nothing related
+- the only network requests were RPC reads to the local validator; no backend
+  call carried the values anywhere
+
+The full version of this check belongs to the encryption phase, which adds
+transaction data and server logs to the list. This one covers what exists now.

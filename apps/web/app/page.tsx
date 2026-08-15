@@ -12,6 +12,8 @@ import {
   type Receipt,
 } from "@/components/vault-actions";
 import { Receipts } from "@/components/receipts";
+import { StrategyBuilder } from "@/components/strategy-builder";
+import { describeRule, type Strategy } from "@silentedge/types";
 
 // The wallet button reads `window` on mount, so it cannot be server-rendered.
 const WalletButton = dynamic(
@@ -24,6 +26,13 @@ export default function Page() {
   const { publicKey, connected } = useWallet();
   const v = useVault();
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [editing, setEditing] = useState(false);
+  /**
+   * Draft strategies live in memory and nowhere else. Nothing is persisted to
+   * localStorage or sent anywhere until the encryption phase, because a draft
+   * written to disk in the clear is a strategy leak with extra steps.
+   */
+  const [strategy, setStrategy] = useState<Strategy | null>(null);
 
   // Balances drive the Max control and the over-balance guard, so they have to
   // be re-read after every action rather than left stale.
@@ -183,45 +192,90 @@ export default function Page() {
             <section className="mt-5 border border-[var(--color-rule)] bg-[var(--color-panel)]">
               <header className="flex items-baseline justify-between border-b border-[var(--color-rule)] px-5 py-3">
                 <h2 className="text-[13px] font-medium tracking-[0.02em]">
-                  Your strategy
+                  {strategy ? strategy.name : "Your strategy"}
                 </h2>
                 <span className="tabular text-[10px] uppercase tracking-[0.14em] text-[var(--color-ink-soft)]">
                   03
                 </span>
               </header>
-              <div className="px-5 py-4">
-                <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
-                  {["Buy below", "Sell above", "Stop below", "Size per trade"].map(
-                    (label) => (
-                      <div
-                        key={label}
-                        className="flex items-baseline justify-between gap-4 border-b border-[var(--color-rule)] py-2.5"
+
+              {editing ? (
+                <StrategyBuilder
+                  maxSizeBps={1000}
+                  onCancel={() => setEditing(false)}
+                  onSave={(s) => {
+                    setStrategy(s);
+                    setEditing(false);
+                  }}
+                />
+              ) : strategy ? (
+                <div className="px-5 py-4">
+                  <ul className="tabular space-y-2 text-[13px]">
+                    {strategy.rules.map((rule) => (
+                      <li
+                        key={rule.kind}
+                        className="border-b border-[var(--color-rule)] pb-2"
                       >
-                        <span className="text-[13px] text-[var(--color-ink-soft)]">
-                          {label}
-                        </span>
-                        <span
-                          className="redacted tabular rounded-[1px] px-2 text-[15px]"
-                          aria-label="Not set"
+                        {describeRule(rule)}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <span className="text-[12px] text-[var(--color-ink-soft)]">
+                      {strategy.sizeBps / 100}% of the vault per trade
+                    </span>
+                    <button
+                      className="border border-[var(--color-rule)] px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-paper)]"
+                      onClick={() => setEditing(true)}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-5 py-4">
+                  <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
+                    {["Buy below", "Sell above", "Stop below", "Size per trade"].map(
+                      (label) => (
+                        <div
+                          key={label}
+                          className="flex items-baseline justify-between gap-4 border-b border-[var(--color-rule)] py-2.5"
                         >
-                          000.00
-                        </span>
-                      </div>
-                    )
-                  )}
+                          <span className="text-[13px] text-[var(--color-ink-soft)]">
+                            {label}
+                          </span>
+                          <span
+                            className="redacted tabular rounded-[1px] px-2 text-[15px]"
+                            aria-label="Not set"
+                          >
+                            000.00
+                          </span>
+                        </div>
+                      )
+                    )}
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <p className="max-w-lg text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                      These four numbers are the whole strategy. They will be
+                      encrypted in your browser and evaluated inside multi-party
+                      computation, so no server holds them in the clear. Your
+                      trades stay public — enough of them will narrow these
+                      values to an observer.
+                    </p>
+                    <button
+                      className="border border-[var(--color-signal)] bg-[var(--color-signal)] px-4 py-2 text-[13px] text-white transition-opacity hover:opacity-90"
+                      onClick={() => setEditing(true)}
+                    >
+                      Build a strategy
+                    </button>
+                  </div>
                 </div>
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <p className="max-w-lg text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
-                    These four numbers are the whole strategy. They are encrypted
-                    in your browser and evaluated inside multi-party computation,
-                    so no server holds them in the clear. Your trades stay public
-                    — enough of them will narrow these values to an observer.
-                  </p>
-                  <Tag kind="shielded" />
-                </div>
-              </div>
-              <footer className="border-t border-[var(--color-rule)] px-5 py-2.5 text-[11px] text-[var(--color-ink-soft)]">
-                Nothing set yet.
+              )}
+
+              <footer className="border-t border-[var(--color-rule)] px-5 py-2.5 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                {strategy
+                  ? "Draft only. It stays in this browser tab — not saved, not sent. Encryption and confidential execution come next."
+                  : "Nothing set yet."}
               </footer>
             </section>
           </>

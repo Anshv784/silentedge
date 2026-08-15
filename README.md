@@ -7,9 +7,10 @@ Your strategy parameters are evaluated inside multi-party computation, so they a
 visible to the platform operator or to any single node running the computation.
 
 > **Status: in progress.** Vault program (custody, deposits, withdrawals,
-> pause/stop) and a read-only web dashboard are built and tested against a
-> devnet fork. Deposit/withdraw UI, strategy, encryption, and trading are not
-> built yet. Nothing here is audited. Do not use with real funds.
+> pause/stop), the web dashboard, and the visual strategy builder are built and
+> tested against a devnet fork. Strategies are drafts held in the browser —
+> encryption, confidential execution, and trading are not built yet. Nothing
+> here is audited. Do not use with real funds.
 
 ---
 
@@ -101,7 +102,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | `apps/web/` | Next.js — wallet, balances, strategy builder, client-side encryption |
 | `apps/api/` | Untrusted service — scheduling, indexing, RPC relay |
 | `packages/sdk/` | TypeScript client: encryption, transaction building |
-| `packages/types/` | Shared strategy and intent types |
+| `packages/types/` | Strategy model, validation, normalization |
 | `packages/config/` | Mints, allowlists, cluster offsets |
 | `tests/` | Suite run against a Surfpool devnet fork |
 
