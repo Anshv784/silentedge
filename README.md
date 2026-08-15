@@ -6,7 +6,9 @@ Create a rule-based trading bot. Your funds stay in a vault only you can withdra
 Your strategy parameters are evaluated inside multi-party computation, so they are not
 visible to the platform operator or to any single node running the computation.
 
-> **Status: pre-implementation.** Architecture approved; no vault or circuit code exists yet.
+> **Status: in progress.** Phase 2 complete — the non-custodial vault program
+> (custody, deposits, withdrawals, pause/stop) is implemented and tested against
+> a devnet fork. Strategy, encryption, and trading are not built yet.
 > Nothing here is audited. Do not use with real funds.
 
 ---
@@ -101,9 +103,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | `packages/sdk/` | TypeScript client: encryption, transaction building |
 | `packages/types/` | Shared strategy and intent types |
 | `packages/config/` | Mints, allowlists, cluster offsets |
-| `tests/unit/` | Circuit and program logic |
-| `tests/surfpool/` | Mainnet-fork tests: Jupiter, Pyth, vault |
-| `tests/e2e/` | Devnet full-loop tests |
+| `tests/` | Suite run against a Surfpool devnet fork |
 
 ## Documentation
 
@@ -114,6 +114,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | [`THREAT_MODEL.md`](THREAT_MODEL.md) | Adversaries, 37 threats, test obligations |
 | [`SECURITY.md`](SECURITY.md) | Security assumptions and disclosure policy |
 | [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md) | Why MagicBlock is excluded |
+| [`docs/testing.md`](docs/testing.md) | Test environment, coverage, and a false-pass trap |
 
 Start with `RESEARCH.md` — `ARCHITECTURE.md` assumes its findings.
 
@@ -133,12 +134,21 @@ Verified working versions:
 
 ## Running locally
 
-Not yet applicable — no runnable code. This section will cover local setup, the
-Surfpool mainnet-fork test loop, and devnet deployment as those land.
-
 ```bash
-cp .env.example .env    # then fill in
+cp .env.example .env          # then fill in
+pnpm install
+
+surfpool start --network devnet --no-deploy    # terminal 1
+
+anchor build                                   # terminal 2
+anchor deploy --provider.cluster http://127.0.0.1:8899
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/id.json \
+  npx ts-mocha -p ./tsconfig.json -t 120000 'tests/**/*.ts'
 ```
+
+Tests run against Surfpool forked from devnet so the real wSOL and USDC mints
+exist and the production allowlist is genuinely exercised. See
+[`docs/testing.md`](docs/testing.md).
 
 Never put a funded keypair path in `.env`. The backend holds no key that can move funds.
 
