@@ -47,6 +47,9 @@ import {
   getComputationAccAddress,
   getClusterAccAddress,
   getLookupTableAddress,
+  getRawCircuitAccAddress,
+  getCircuitState,
+  getArciumProgram as _getArciumProgram,
   x25519,
 } from "@arcium-hq/client";
 
@@ -167,6 +170,41 @@ describe("arcium — hello world", function () {
     );
   });
 
+  /**
+   * Confirm the circuit stored on chain is byte-identical to the one we built.
+   *
+   * Nothing on chain does this. `isCompleted` is a flag set by the finalize
+   * step, not a checksum, so a partially-written circuit reports as finalized
+   * and `uploadCircuit` then refuses to touch it. The cluster fetches the
+   * corrupt bytes, fails to execute them, and aborts every computation — which
+   * surfaces as `verify_output` failing, a very long way from the real cause.
+   *
+   * Cost a whole debugging session once. Never again.
+   */
+  async function assertCircuitMatchesLocal(compDefPDA: any) {
+    const local = fs.readFileSync("build/add_ten.arcis");
+    const rawAcc = getRawCircuitAccAddress(compDefPDA, 0);
+    const info = await provider.connection.getAccountInfo(rawAcc);
+    if (!info) throw new Error("raw circuit account missing after upload");
+
+    // The account carries a small header before the payload.
+    const start = info.data.indexOf(local.subarray(0, 32));
+    if (start < 0) throw new Error("uploaded circuit does not start with the local circuit");
+    const onchain = info.data.subarray(start, start + local.length);
+
+    if (Buffer.compare(onchain, local) !== 0) {
+      let firstDiff = -1;
+      for (let i = 0; i < local.length; i++) {
+        if (onchain[i] !== local[i]) { firstDiff = i; break; }
+      }
+      throw new Error(
+        `on-chain circuit differs from build/add_ten.arcis at byte ${firstDiff} ` +
+          `(chunk ${Math.floor(firstDiff / 814)}). The upload did not complete. ` +
+          `Deactivate, close the buffers and the definition, then re-upload.`
+      );
+    }
+  }
+
   async function initAddTenCompDef(owner: any): Promise<string> {
     const offset = getCompDefAccOffset("add_ten");
     const compDefPDA = PublicKey.findProgramAddressSync(
@@ -197,6 +235,7 @@ describe("arcium — hello world", function () {
         900,
         { skipPreflight: true, commitment: "confirmed" }
       );
+      await assertCircuitMatchesLocal(compDefPDA);
       return "already initialized";
     }
 
@@ -229,6 +268,7 @@ describe("arcium — hello world", function () {
         commitment: "confirmed",
       }
     );
+    await assertCircuitMatchesLocal(compDefPDA);
     return sig;
   }
 });

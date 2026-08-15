@@ -271,9 +271,78 @@ behaviour trade authorization depends on (THREAT_MODEL T-20, T-33), and it is no
 demonstrated against a real cluster rather than asserted. What is *not*
 demonstrated is the happy path.
 
-Most likely cause is a version skew between the locally compiled circuit
-(arcis 0.14.1) and whatever the devnet cluster nodes run. Worth raising with
-Arcium rather than guessing further.
+### The actual cause: a corrupt circuit we uploaded
+
+The first guess — version skew against the devnet nodes — was **wrong**, and
+worth recording as wrong. Every component is on the same version:
+
+| Component | Version |
+|-----------|---------|
+| `arcium` CLI | 0.14.1 |
+| `@arcium-hq/client` | 0.14.1 |
+| `arcis` (circuit crate) | 0.14.1 |
+| `arcium-anchor` / `arcium-client` | 0.14.1 |
+
+Reading the bytes settled it. The on-chain raw-circuit account holds a
+**different circuit than the one we compiled**:
+
+```
+local  build/add_ten.arcis   62,534 bytes  sha256 6d17f6b4…
+onchain raw circuit acc 0    62,543 bytes  (9-byte header + payload)
+        first differing byte at offset 814
+        1,485 trailing bytes never written
+```
+
+814 is not a coincidence: the Arcium `uploadCircuit` instruction takes a
+**fixed 814-byte chunk** plus an offset. Chunk 0 landed; later chunks did not.
+That is the rate-limited first upload attempt, which died partway through.
+
+Two things then conspired to hide it:
+
+1. **`isCompleted` is a flag, not a checksum.** `getCircuitState` returns
+   `OnchainFinalized` by reading `circuitSource.onChain[0].isCompleted` — it
+   never compares the stored bytes to anything. A half-written circuit reports
+   as finalized.
+2. **`uploadCircuit` returns early unless the state is `OnchainPending`.** Every
+   later attempt to fix the upload logged `skipped` and did nothing.
+
+So the cluster was faithfully fetching a corrupt circuit, failing to execute it,
+and aborting — exactly as a detect-and-abort protocol should. Nothing was wrong
+with Arcium, the cluster, or the callback wiring.
+
+**The lesson worth keeping:** there is no on-chain integrity check binding the
+stored circuit to the artifact you built. `build/add_ten.hash` exists locally
+(it is the sha256 of the `.arcis` file) but nothing on chain verifies it.
+Verifying the upload is the integrator's job.
+
+`tests/hello-arcium.ts` now does it: after any upload path it reads the raw
+circuit account back and compares it byte for byte with `build/add_ten.arcis`,
+failing with the offset and chunk index if they differ. A corrupt upload should
+fail immediately and say so, not surface hours later as an unexplained
+`verify_output` failure.
+
+### Recovering from a corrupt upload
+
+A finalized circuit is immutable — rewriting chunks returns
+`ComputationDefinitionAlreadyCompleted` (6303). The definition has to be torn
+down and rebuilt:
+
+```bash
+OFF=<comp offset>      # Buffer.from(getCompDefAccOffset("add_ten")).readUInt32LE()
+PID=<mxe program id>
+
+arcium deactivate-computation-definition -o $OFF -p $PID -k <kp> -u <rpc>
+# wait 180 slots (~72s)
+arcium close-computation-definition-buffers -o $OFF -p $PID -i 0 -k <kp> -u <rpc>
+arcium close-computation-definition -o $OFF -p $PID -c 456 -k <kp> -u <rpc>
+```
+
+Two waits, not one. The buffers close after the definition's own TTL, but
+`close-computation-definition` additionally fails with
+`ComputationDefinitionHasActiveComputations` (6308) until every computation
+queued against it has finalized or expired — each of those has its own 180-slot
+life. Closing reclaims the rent, which matters when the wallet is nearly empty
+from the failed attempts.
 
 ## Where this is blocked
 
