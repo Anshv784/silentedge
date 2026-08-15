@@ -42,3 +42,5 @@ export function deriveVaultPda(owner: PublicKey): PublicKey {
     VAULT_PROGRAM_ID
   )[0];
 }
+
+export { toBaseUnits, fromBaseUnits } from "./amount";

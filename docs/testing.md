@@ -70,9 +70,24 @@ produced. The suite asserts on specific codes (`ConstraintSeeds`,
 `ConstraintTokenOwner`, `VaultNotActive`, …) rather than merely that something
 was thrown, because "it threw" is not evidence the control works.
 
+## Browser flows
+
+The program tests build instructions their own way, so they do not exercise the
+account wiring in `apps/web/lib/vault-program.ts`. That path is verified by
+driving the real UI against the fork.
+
+There is no wallet extension in an automation browser, so a Wallet Standard
+provider is injected at runtime that signs with **WebCrypto Ed25519** over a
+funded throwaway keypair. It signs genuine transactions — create vault, deposit,
+withdraw all land on chain and the resulting balances are checked against the
+chain independently of what the UI displays.
+
+This harness is injected per session and is deliberately not committed: it is a
+test fixture holding a private key, and it has no place in the app bundle.
+
 ## Coverage
 
-Mapped to THREAT_MODEL.md §9. 19 tests.
+Mapped to THREAT_MODEL.md §9. 27 tests.
 
 | Area | Covered |
 |------|---------|
@@ -84,6 +99,8 @@ Mapped to THREAT_MODEL.md §9. 19 tests.
 | Account substitution | foreign vault config (`ConstraintSeeds`), destination substitution (`ConstraintTokenOwner`), foreign vault ATA (`ConstraintTokenOwner`) |
 | Status | owner pause/resume, stranger rejected on all three, stopped is terminal |
 | Structural | `withdraw` account list pinned — fails if a future phase adds a dependency |
+| Layout | vault status byte offset pinned, since the web app reads it directly |
+| Amounts | `toBaseUnits` — float-lossy cases, over-precision refusal, malformed input |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
 pinning, oracle guards, swap execution. Those arrive with their phases.

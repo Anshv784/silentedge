@@ -1,10 +1,17 @@
 "use client";
 
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { BASE_SYMBOL, QUOTE_SYMBOL, VAULT_SEED } from "@silentedge/config";
 import { useVault } from "@/lib/use-vault";
 import { Address, Figure, Panel, Tag } from "@/components/readouts";
+import {
+  CreateVault,
+  Transfer,
+  type Receipt,
+} from "@/components/vault-actions";
+import { Receipts } from "@/components/receipts";
 
 // The wallet button reads `window` on mount, so it cannot be server-rendered.
 const WalletButton = dynamic(
@@ -16,6 +23,14 @@ const WalletButton = dynamic(
 export default function Page() {
   const { publicKey, connected } = useWallet();
   const v = useVault();
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+
+  // Balances drive the Max control and the over-balance guard, so they have to
+  // be re-read after every action rather than left stale.
+  function recordAndRefresh(r: Receipt) {
+    setReceipts((prev) => [r, ...prev]);
+    v.refresh();
+  }
 
   return (
     <main className="grid-field min-h-dvh">
@@ -97,7 +112,7 @@ export default function Page() {
                 note={
                   v.vaultStatus
                     ? "Program-controlled. Withdrawals go to your address only — the destination is derived, not chosen."
-                    : "Not created yet. Creating a vault is a single transaction you sign."
+                    : undefined
                 }
               >
                 <div className="mb-4">
@@ -134,14 +149,35 @@ export default function Page() {
                     <div className="mt-4 flex justify-end">
                       <Tag kind="exposed" />
                     </div>
+
+                    <div className="mt-5 space-y-5 border-t border-[var(--color-rule)] pt-5">
+                      <Transfer
+                        owner={publicKey!}
+                        direction="deposit"
+                        available={{
+                          [QUOTE_SYMBOL]: v.walletUsdc ?? 0,
+                          [BASE_SYMBOL]: v.walletSol ?? 0,
+                        }}
+                        onDone={recordAndRefresh}
+                      />
+                      <Transfer
+                        owner={publicKey!}
+                        direction="withdraw"
+                        available={{
+                          [QUOTE_SYMBOL]: v.vaultUsdc ?? 0,
+                          [BASE_SYMBOL]: v.vaultWrappedSol ?? 0,
+                        }}
+                        onDone={recordAndRefresh}
+                      />
+                    </div>
                   </>
                 ) : (
-                  <div className="border-t border-[var(--color-rule)] py-8 text-center text-[13px] text-[var(--color-ink-soft)]">
-                    No vault at this address yet.
-                  </div>
+                  <CreateVault owner={publicKey!} onDone={recordAndRefresh} />
                 )}
               </Panel>
             </div>
+
+            <Receipts items={receipts} />
 
             {/* --- The shielded layer ---------------------------------- */}
             <section className="mt-5 border border-[var(--color-rule)] bg-[var(--color-panel)]">
