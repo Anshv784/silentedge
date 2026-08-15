@@ -13,9 +13,10 @@ visible to the platform operator or to any single node running the computation.
 > ([`docs/arcium-hello-world.md`](docs/arcium-hello-world.md)) and a strategy
 > persists as `Enc<Mxe, Strategy>` across computations
 > ([`docs/persistent-strategy-state.md`](docs/persistent-strategy-state.md)).
-> The vault's own evaluation is not wired to it yet, so the app still encrypts
-> to a development key and says so. Trading is not built. Nothing here is
-> audited. Do not use with real funds.
+> Strategy evaluation runs against the live Pyth SOL/USD feed and returns
+> BUY/HOLD/SELL. The vault's own evaluation is not wired to it yet, so the app
+> still encrypts to a development key and says so. Trading is not built.
+> Nothing here is audited. Do not use with real funds.
 
 ---
 
@@ -124,6 +125,8 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | [`docs/testing.md`](docs/testing.md) | Test environment, coverage, and a false-pass trap |
 | [`docs/arcium-hello-world.md`](docs/arcium-hello-world.md) | The smallest real Arcium computation, and what it cost |
 | [`docs/persistent-strategy-state.md`](docs/persistent-strategy-state.md) | `Enc<Mxe, Strategy>` surviving between computations |
+| [`docs/what-is-private.md`](docs/what-is-private.md) | What the engine hides, and what leaks anyway |
+| [`docs/oracle.md`](docs/oracle.md) | Why Pyth triggers and Jupiter quotes |
 
 Start with `RESEARCH.md` — `ARCHITECTURE.md` assumes its findings.
 

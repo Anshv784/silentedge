@@ -19,6 +19,10 @@ use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
 // Not re-exported by the prelude in 0.14.1.
 use arcium_client::idl::arcium::types::CallbackAccount;
+use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
+
+pub mod oracle;
+pub use oracle::*;
 
 const COMP_DEF_OFFSET_ADD_TEN: u32 = comp_def_offset("add_ten");
 const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy");
@@ -268,6 +272,11 @@ pub mod hello_arcium {
     /// information and the vault balance is a public token account; encrypting
     /// them would cost gates and hide nothing.
     ///
+    /// The price is read from Pyth here rather than accepted as an argument.
+    /// `vault_value` is still passed in, which is a remaining hole: it scales
+    /// the trade size, so a caller can inflate it. It closes when the vault owns
+    /// this instruction and can read its own token accounts (Phase 11).
+    ///
     /// Anyone may queue this — evaluation is not a privileged action, and a
     /// permissionless scheduler is what stops the operator being able to censor
     /// a user's bot by simply not running it. The result authorizes nothing on
@@ -275,13 +284,18 @@ pub mod hello_arcium {
     pub fn evaluate_strategy(
         ctx: Context<EvaluateStrategy>,
         computation_offset: u64,
-        price: u64,
         vault_value: u64,
     ) -> Result<()> {
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
         let stored = &ctx.accounts.stored_strategy;
         require!(stored.version > 0, HelloError::NoStrategyStored);
+
+        // Read on chain rather than accepting a caller-supplied number. This
+        // instruction is permissionless, so a price argument would let anyone
+        // drive someone else's strategy to whatever decision they wanted.
+        // Every validation inside is a refusal, never a fallback.
+        let price = read_sol_usd_price(&ctx.accounts.price_update)?;
 
         // Enc<Mxe, T> needs no x25519 key — there is no shared secret. Order
         // must match the circuit signature: the encrypted struct, then the two
@@ -609,6 +623,9 @@ pub struct EvaluateStrategy<'info> {
         bump = stored_strategy.bump,
     )]
     pub stored_strategy: Account<'info, StoredStrategy>,
+    /// Pyth price update. Ownership by the receiver program is enforced by the
+    /// account type; the feed id and staleness are checked when it is read.
+    pub price_update: Account<'info, PriceUpdateV2>,
     #[account(
         init_if_needed,
         space = 9,
@@ -760,4 +777,20 @@ pub enum HelloError {
 
     #[msg("Arithmetic overflow")]
     Overflow,
+
+    // --- oracle ---
+    #[msg("Oracle price is zero or negative")]
+    NonPositivePrice,
+
+    #[msg("Oracle confidence interval is too wide to trade on")]
+    ConfidenceTooWide,
+
+    #[msg("Oracle price is outside the reasonable band")]
+    PriceOutOfBand,
+
+    #[msg("Oracle exponent is outside the supported range")]
+    ExponentOutOfRange,
+
+    #[msg("Arithmetic overflow scaling the oracle price")]
+    ScalingOverflow,
 }

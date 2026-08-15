@@ -25,6 +25,7 @@ anchor-lang = { version = "=1.0.2", features = ["init-if-needed"] }
 arcium-client = { default-features = false, version = "=0.14.1" }
 arcium-macros = "=0.14.1"
 arcium-anchor = "=0.14.1"
+pyth-solana-receiver-sdk = "2.0.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

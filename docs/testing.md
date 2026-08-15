@@ -107,9 +107,11 @@ Mapped to THREAT_MODEL.md §9. 58 tests, plus one that skips without a cluster.
 
 | Arcium | `x + 10` end to end on the devnet cluster — **passes**; skips only when no cluster is reachable. See [arcium-hello-world.md](arcium-hello-world.md) |
 | Strategy state | `Enc<Mxe, Strategy>` stored then read back by a later computation — **passes** on devnet. See [persistent-strategy-state.md](persistent-strategy-state.md) |
+| Strategy engine | BUY / HOLD / SELL / stop against the **live Pyth price**, fake-oracle rejection, no threshold on chain — **passes** on devnet. See [oracle.md](oracle.md) and [what-is-private.md](what-is-private.md) |
+| Oracle scaling | Pyth exponent handling in both directions, absurd exponents, u64 overflow — Rust unit tests |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
-pinning, oracle guards, swap execution. Those arrive with their phases.
+pinning, swap execution. Those arrive with their phases.
 
 A skipped test is not a passing one. `tests/hello-arcium.ts` skips when no MXE
 answers, rather than mocking a cluster and reporting green — the whole point of
