@@ -1,0 +1,46 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id.json
+*-keypair.json
+*keypair*.json
+wallet*.json
+bls-keypair.json
+identity.pem
+/keys/
+/.secrets/
+
+# --- Rust / Anchor / Solana ---
+target/
+.anchor/
+test-ledger/
+**/*.rs.bk
+Cargo.lock
+
+# --- Arcium ---
+build/
+.arcium/
+artifacts/
+
+# --- Node ---
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+.turbo/
+npm-debug.log*
+yarn-error.log*
+
+# --- Surfpool ---
+.surfpool/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
