@@ -87,7 +87,7 @@ test fixture holding a private key, and it has no place in the app bundle.
 
 ## Coverage
 
-Mapped to THREAT_MODEL.md §9. 58 tests.
+Mapped to THREAT_MODEL.md §9. 58 tests, plus one that skips without a cluster.
 
 | Area | Covered |
 |------|---------|
@@ -105,8 +105,14 @@ Mapped to THREAT_MODEL.md §9. 58 tests.
 | Encryption | round trip, derived-key recovery, nonce freshness, no plaintext in ciphertext, wrong-key failure |
 | Strategy on chain | storage, version bump, zero-key rejection, stranger rejected, **no plaintext in transaction, account, or logs** |
 
+| Arcium | `x + 10` end to end — **skips** unless a cluster is reachable, see [arcium-hello-world.md](arcium-hello-world.md) |
+
 Not yet covered, because the code does not exist: trade authorization, cluster
 pinning, oracle guards, swap execution. Those arrive with their phases.
+
+A skipped test is not a passing one. `tests/hello-arcium.ts` skips when no MXE
+answers, rather than mocking a cluster and reporting green — the whole point of
+that test is that the computation happens somewhere we do not control.
 
 ## A dependency footgun worth knowing about
 

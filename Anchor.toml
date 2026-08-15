@@ -8,9 +8,11 @@ skip-lint = false
 
 [programs.localnet]
 vault = "J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ"
+hello_arcium = "HVEKKMWwjLaQyXqkMGGshNGXa3Wm1PCSUnRaB6vAnB99"
 
 [programs.devnet]
 vault = "J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ"
+hello_arcium = "HVEKKMWwjLaQyXqkMGGshNGXa3Wm1PCSUnRaB6vAnB99"
 
 [provider]
 cluster = "localnet"

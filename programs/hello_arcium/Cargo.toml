@@ -1,29 +1,30 @@
 [package]
-name = "vault"
+name = "hello_arcium"
 version = "0.1.0"
-description = "SilentEdge non-custodial trading vault"
+description = "Smallest real Arcium computation, used to prove the pipeline"
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "vault"
+name = "hello_arcium"
 
 [features]
 default = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
+no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+idl-build = ["anchor-lang/idl-build", "arcium-anchor/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
-# Selects the mint allowlist. Exactly one of these must match the target cluster.
-mainnet = []
 
 [dependencies]
 anchor-lang = { version = "=1.0.2", features = ["init-if-needed"] }
-anchor-spl = "=1.0.2"
+arcium-client = { default-features = false, version = "=0.14.1" }
+arcium-macros = "=0.14.1"
+arcium-anchor = "=0.14.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

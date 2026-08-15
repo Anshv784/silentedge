@@ -100,6 +100,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 |------|----------|
 | `programs/vault/` | Anchor program — custody, limits, intents, swap CPI |
 | `encrypted-ixs/` | Arcis circuits (Arcium workspace convention) |
+| `programs/hello_arcium/` | Disposable proof that the Arcium pipeline works |
 | `apps/web/` | Next.js — wallet, balances, strategy builder, client-side encryption |
 | `apps/api/` | Untrusted service — scheduling, indexing, RPC relay |
 | `packages/sdk/` | Strategy encryption (Arcium RescueCipher + x25519) |
@@ -117,6 +118,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | [`SECURITY.md`](SECURITY.md) | Security assumptions and disclosure policy |
 | [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md) | Why MagicBlock is excluded |
 | [`docs/testing.md`](docs/testing.md) | Test environment, coverage, and a false-pass trap |
+| [`docs/arcium-hello-world.md`](docs/arcium-hello-world.md) | The smallest real Arcium computation, and what it cost |
 
 Start with `RESEARCH.md` — `ARCHITECTURE.md` assumes its findings.
 

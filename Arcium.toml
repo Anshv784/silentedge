@@ -1,0 +1,15 @@
+[localnet]
+# Nodes in the localnet's single cluster. Two is enough to exercise the MPC
+# path: Arcium's privacy assumption is that at least one node is honest, so a
+# single-node "cluster" would prove nothing.
+nodes = 2
+nodes_ips = [
+  [172, 20, 0, 100],
+  [172, 20, 0, 101]
+]
+localnet_timeout_secs = 60
+backends = ["Cerberus"]
+
+# Devnet cluster offset, per Arcium docs. Mainnet is 2026.
+[clusters.devnet]
+offset = 456

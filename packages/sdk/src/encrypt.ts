@@ -49,7 +49,7 @@ export async function deriveEncryptionKeypair(
     new TextEncoder().encode(KEY_DERIVATION_MESSAGE)
   );
   // x25519 clamps the scalar internally, so any 32 bytes are a valid secret.
-  const digest = await crypto.subtle.digest("SHA-256", signature as BufferSource);
+  const digest = await crypto.subtle.digest("SHA-256", signature as unknown as ArrayBuffer);
   const privateKey = new Uint8Array(digest);
   return { privateKey, publicKey: x25519.getPublicKey(privateKey) };
 }

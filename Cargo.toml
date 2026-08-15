@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/*"]
+members = ["programs/*", "encrypted-ixs"]
 resolver = "2"
 
 [workspace.package]
