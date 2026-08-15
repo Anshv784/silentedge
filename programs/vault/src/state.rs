@@ -87,3 +87,28 @@ impl VaultConfig {
         [VAULT_SEED, self.owner.as_ref(), std::slice::from_ref(&self.bump)]
     }
 }
+
+/// A vault's encrypted strategy.
+///
+/// The program stores these bytes and never interprets them. It cannot: the
+/// plaintext is four integers encrypted under a secret shared between the
+/// submitter and the MXE cluster, and nothing on chain holds either half of
+/// that exchange. Storing opaque bytes is the point, not a limitation.
+///
+/// `encryption_pubkey` is the submitter's x25519 public key. The MXE needs it
+/// to derive the same shared secret, so it is public by construction — it
+/// reveals who encrypted, never what.
+#[account]
+#[derive(InitSpace, Debug)]
+pub struct StrategyState {
+    pub vault: Pubkey,
+    /// One 32-byte ciphertext per encrypted scalar, in circuit field order.
+    pub ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
+    /// Encryption nonce. Fresh per submission; reuse would leak.
+    pub nonce: u128,
+    pub encryption_pubkey: [u8; 32],
+    /// Bumped on every submission. Binds trade authorizations to the strategy
+    /// that produced them, so replacing a strategy invalidates work in flight.
+    pub version: u32,
+    pub bump: u8,
+}

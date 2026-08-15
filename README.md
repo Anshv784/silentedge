@@ -7,10 +7,11 @@ Your strategy parameters are evaluated inside multi-party computation, so they a
 visible to the platform operator or to any single node running the computation.
 
 > **Status: in progress.** Vault program (custody, deposits, withdrawals,
-> pause/stop), the web dashboard, and the visual strategy builder are built and
-> tested against a devnet fork. Strategies are drafts held in the browser —
-> encryption, confidential execution, and trading are not built yet. Nothing
-> here is audited. Do not use with real funds.
+> pause/stop), the web dashboard, the strategy builder, and client-side
+> strategy encryption are built and tested against a devnet fork. No MXE is
+> deployed yet, so strategies are encrypted to a development key rather than a
+> live MPC cluster — the interface says so. Confidential execution and trading
+> are not built yet. Nothing here is audited. Do not use with real funds.
 
 ---
 
@@ -101,7 +102,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | `encrypted-ixs/` | Arcis circuits (Arcium workspace convention) |
 | `apps/web/` | Next.js — wallet, balances, strategy builder, client-side encryption |
 | `apps/api/` | Untrusted service — scheduling, indexing, RPC relay |
-| `packages/sdk/` | TypeScript client: encryption, transaction building |
+| `packages/sdk/` | Strategy encryption (Arcium RescueCipher + x25519) |
 | `packages/types/` | Strategy model, validation, normalization |
 | `packages/config/` | Mints, allowlists, cluster offsets |
 | `tests/` | Suite run against a Surfpool devnet fork |

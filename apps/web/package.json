@@ -19,7 +19,8 @@
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@silentedge/types": "workspace:*"
+    "@silentedge/types": "workspace:*",
+    "@silentedge/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

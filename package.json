@@ -8,11 +8,14 @@
     "surfpool": "surfpool start --network devnet --no-deploy --airdrop-amount 10000000000000"
   },
   "dependencies": {
+    "@anchor-lang/core": "^1.1.2",
+    "@arcium-hq/client": "^0.14.1",
     "@coral-xyz/anchor": "^0.32.0",
-    "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0",
     "@silentedge/config": "workspace:*",
-    "@silentedge/types": "workspace:*"
+    "@silentedge/sdk": "workspace:*",
+    "@silentedge/types": "workspace:*",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0"
   },
   "devDependencies": {
     "@types/chai": "^4.3.20",

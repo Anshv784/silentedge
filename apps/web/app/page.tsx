@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { BASE_SYMBOL, QUOTE_SYMBOL, VAULT_SEED } from "@silentedge/config";
@@ -13,7 +13,12 @@ import {
 } from "@/components/vault-actions";
 import { Receipts } from "@/components/receipts";
 import { StrategyBuilder } from "@/components/strategy-builder";
-import { describeRule, type Strategy } from "@silentedge/types";
+import { describeRule, normalize, type Strategy } from "@silentedge/types";
+import { deriveEncryptionKeypair, encryptStrategy } from "@silentedge/sdk";
+import { fetchMxePublicKey, type MxeKey } from "@/lib/mxe";
+import { submitStrategy, readableError, useProgram } from "@/lib/vault-program";
+import { VAULT_PROGRAM_ID } from "@silentedge/config";
+import { useConnection } from "@solana/wallet-adapter-react";
 
 // The wallet button reads `window` on mount, so it cannot be server-rendered.
 const WalletButton = dynamic(
@@ -23,7 +28,9 @@ const WalletButton = dynamic(
 );
 
 export default function Page() {
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, signMessage } = useWallet();
+  const { connection } = useConnection();
+  const program = useProgram();
   const v = useVault();
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [editing, setEditing] = useState(false);
@@ -33,6 +40,47 @@ export default function Page() {
    * written to disk in the clear is a strategy leak with extra steps.
    */
   const [strategy, setStrategy] = useState<Strategy | null>(null);
+  const [mxe, setMxe] = useState<MxeKey | null>(null);
+  const [encrypting, setEncrypting] = useState(false);
+  const [encryptError, setEncryptError] = useState<string | null>(null);
+  const [submittedVersion, setSubmittedVersion] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!connected) return;
+    fetchMxePublicKey(connection, VAULT_PROGRAM_ID).then(setMxe);
+  }, [connection, connected]);
+
+  /**
+   * Encrypt in the browser, then submit only the ciphertext.
+   *
+   * The plaintext never leaves this function's scope: it is normalized,
+   * encrypted, and the result handed to the transaction builder. No fetch, no
+   * storage, no logging of the draft anywhere along the way.
+   */
+  async function encryptAndSubmit(draft: Strategy) {
+    if (!program || !publicKey || !signMessage || !mxe) return;
+    setEncrypting(true);
+    setEncryptError(null);
+    try {
+      const keypair = await deriveEncryptionKeypair(signMessage);
+      const encrypted = encryptStrategy(
+        normalize(draft, 1000),
+        mxe.key,
+        keypair.privateKey
+      );
+      const signature = await submitStrategy(program, publicKey, encrypted);
+      setSubmittedVersion((v) => (v ?? 0) + 1);
+      recordAndRefresh({
+        signature,
+        action: `Encrypt strategy "${draft.name}"`,
+        at: Date.now(),
+      });
+    } catch (e) {
+      setEncryptError(readableError(e));
+    } finally {
+      setEncrypting(false);
+    }
+  }
 
   // Balances drive the Max control and the over-balance guard, so they have to
   // be re-read after every action rather than left stale.
@@ -206,6 +254,7 @@ export default function Page() {
                   onSave={(s) => {
                     setStrategy(s);
                     setEditing(false);
+                    void encryptAndSubmit(s);
                   }}
                 />
               ) : strategy ? (
@@ -220,9 +269,28 @@ export default function Page() {
                       </li>
                     ))}
                   </ul>
+                  {mxe && !mxe.live ? (
+                    <div className="mt-3 border border-[var(--color-exposed)] bg-[var(--color-paper)] px-3 py-2 text-[11px] leading-relaxed">
+                      <strong className="text-[var(--color-exposed)]">
+                        Not protected yet.
+                      </strong>{" "}
+                      {mxe.reason} Your strategy is encrypted to a development
+                      key, not to a live MPC cluster, so treat it as public.
+                    </div>
+                  ) : null}
+                  {encryptError ? (
+                    <p role="alert" className="mt-3 text-[12px] text-[var(--color-exposed)]">
+                      {encryptError}
+                    </p>
+                  ) : null}
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                     <span className="text-[12px] text-[var(--color-ink-soft)]">
                       {strategy.sizeBps / 100}% of the vault per trade
+                      {encrypting
+                        ? " · encrypting…"
+                        : submittedVersion
+                          ? ` · encrypted on chain (v${submittedVersion})`
+                          : ""}
                     </span>
                     <button
                       className="border border-[var(--color-rule)] px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-paper)]"
@@ -274,7 +342,7 @@ export default function Page() {
 
               <footer className="border-t border-[var(--color-rule)] px-5 py-2.5 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
                 {strategy
-                  ? "Draft only. It stays in this browser tab — not saved, not sent. Encryption and confidential execution come next."
+                  ? "Encrypted in this browser before it was sent. The plaintext never left this tab; only ciphertext is on chain."
                   : "Nothing set yet."}
               </footer>
             </section>

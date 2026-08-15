@@ -10,7 +10,9 @@ import {
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountInstruction,
 } from "@solana/spl-token";
-import { BASE_MINT, QUOTE_MINT, deriveVaultPda } from "@silentedge/config";
+import { BASE_MINT, QUOTE_MINT, deriveVaultPda, VAULT_PROGRAM_ID } from "@silentedge/config";
+import type { EncryptedStrategy } from "@silentedge/sdk";
+import { nonceToU128 } from "@silentedge/sdk";
 
 // Build artifact. Run `anchor build` before building the web app.
 import idl from "../../../target/idl/vault.json";
@@ -125,6 +127,41 @@ export async function withdraw(
     .rpc();
 }
 
+export function deriveStrategyPda(vault: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("strategy"), vault.toBuffer()],
+    VAULT_PROGRAM_ID
+  )[0];
+}
+
+/**
+ * Store an encrypted strategy on chain.
+ *
+ * Only ciphertext, a nonce, and a public key cross this boundary. The plaintext
+ * stays in page memory and is never serialized into a transaction, a log, or a
+ * request.
+ */
+export async function submitStrategy(
+  program: Program,
+  owner: PublicKey,
+  encrypted: EncryptedStrategy
+): Promise<string> {
+  const vault = deriveVaultPda(owner);
+  return program.methods
+    .submitStrategy(
+      encrypted.ciphertexts.map((c) => Array.from(c)),
+      new BN(nonceToU128(encrypted.nonce).toString()),
+      Array.from(encrypted.encryptionPublicKey)
+    )
+    .accountsPartial({
+      owner,
+      vaultConfig: vault,
+      strategyState: deriveStrategyPda(vault),
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc();
+}
+
 /** Turn an Anchor/RPC error into something a person can act on. */
 export function readableError(e: unknown): string {
   const text = e instanceof Error ? e.message : String(e);
@@ -132,7 +169,7 @@ export function readableError(e: unknown): string {
     return "You declined the transaction.";
   }
   const code = text.match(
-    /(ZeroAmount|InsufficientBalance|VaultNotActive|VaultStopped|MintNotAllowed|InvalidRiskLimit|NotPauseAuthority)/
+    /(ZeroAmount|InsufficientBalance|VaultNotActive|VaultStopped|MintNotAllowed|InvalidRiskLimit|NotPauseAuthority|InvalidEncryptionKey)/
   )?.[1];
   switch (code) {
     case "ZeroAmount":
@@ -145,6 +182,8 @@ export function readableError(e: unknown): string {
       return "This vault is stopped.";
     case "MintNotAllowed":
       return "That token is not supported.";
+    case "InvalidEncryptionKey":
+      return "The encryption key was not usable. Reconnect your wallet and try again.";
     default:
       break;
   }

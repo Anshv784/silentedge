@@ -25,4 +25,7 @@ pub enum VaultError {
 
     #[msg("Arithmetic overflow")]
     Overflow,
+
+    #[msg("Encryption public key must not be all zeros")]
+    InvalidEncryptionKey,
 }

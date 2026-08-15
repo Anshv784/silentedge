@@ -3,6 +3,13 @@ use anchor_lang::prelude::*;
 /// Seed prefix for the per-owner vault config PDA.
 pub const VAULT_SEED: &[u8] = b"vault";
 
+/// Seed prefix for a vault's encrypted strategy.
+pub const STRATEGY_SEED: &[u8] = b"strategy";
+
+/// Encrypted scalars in a strategy: entry_below, exit_above, stop_below, size_bps.
+/// Fixed because Arcis circuits are fixed-shape (RESEARCH.md §2.7).
+pub const STRATEGY_FIELDS: usize = 4;
+
 /// Wrapped SOL. Same address on every cluster.
 pub const BASE_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 

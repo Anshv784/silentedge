@@ -87,7 +87,7 @@ test fixture holding a private key, and it has no place in the app bundle.
 
 ## Coverage
 
-Mapped to THREAT_MODEL.md §9. 42 tests.
+Mapped to THREAT_MODEL.md §9. 58 tests.
 
 | Area | Covered |
 |------|---------|
@@ -102,9 +102,22 @@ Mapped to THREAT_MODEL.md §9. 42 tests.
 | Layout | vault status byte offset pinned, since the web app reads it directly |
 | Amounts | `toBaseUnits` — float-lossy cases, over-precision refusal, malformed input |
 | Strategy | price parsing, rule ordering, size caps, normalization to the four circuit fields, never-true sentinels |
+| Encryption | round trip, derived-key recovery, nonce freshness, no plaintext in ciphertext, wrong-key failure |
+| Strategy on chain | storage, version bump, zero-key rejection, stranger rejected, **no plaintext in transaction, account, or logs** |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
 pinning, oracle guards, swap execution. Those arrive with their phases.
+
+## A dependency footgun worth knowing about
+
+`@arcium-hq/client` 0.14.1 does not bundle for browsers out of the box. Its ESM
+entry does `import anchor from "@anchor-lang/core"`, which has no default
+export, so webpack rejects it outright. The CJS build is fine but the package's
+`exports` map hides it, so `apps/web/next.config.mjs` aliases it by path and
+stubs the node builtins it pulls for paths a browser never takes.
+
+Remove the alias once the SDK ships a working ESM entry. It is called out in the
+config so nobody has to rediscover it.
 
 ## Strategy privacy, checked by hand
 
@@ -117,5 +130,20 @@ through a real browser:
 - the only network requests were RPC reads to the local validator; no backend
   call carried the values anywhere
 
-The full version of this check belongs to the encryption phase, which adds
-transaction data and server logs to the list. This one covers what exists now.
+Repeated after encryption landed, this time including the chain. Having built
+and submitted a strategy through the real UI, with the values 150 / 180.5 / 120
+and the name "Range trade":
+
+| Surface | Result |
+|---------|--------|
+| `localStorage` | only `walletName` — no values, plain or normalized |
+| `sessionStorage`, cookies, IndexedDB | nothing related |
+| Network requests | only RPC calls to the validator |
+| Strategy account (221 bytes) | ciphertext present, no plaintext |
+| Transaction JSON | no plaintext |
+| Program logs | `Program log: Instruction: SubmitStrategy` and nothing else |
+
+Each value was searched for both as decimal text and as a little-endian u64, on
+the grounds that "not present" should hold either way. The same search is
+automated in `tests/vault.ts` so a future change that starts logging the payload
+fails the suite rather than shipping.

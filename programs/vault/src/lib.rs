@@ -130,6 +130,50 @@ pub mod vault {
         Ok(())
     }
 
+    /// Store an encrypted strategy for a vault, or replace the existing one.
+    ///
+    /// The program validates shape and authority, never content. It has no way
+    /// to read the ciphertext and no reason to: the whole point is that the
+    /// operator running this program learns nothing from it.
+    ///
+    /// Uses `init_if_needed` because submitting is create-or-replace. The usual
+    /// re-initialization risk does not apply here — the account is seeded by the
+    /// vault, the vault is seeded by the owner, and the owner must sign, so no
+    /// one else can reach it.
+    pub fn submit_strategy(
+        ctx: Context<SubmitStrategy>,
+        ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
+        nonce: u128,
+        encryption_pubkey: [u8; 32],
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.vault_config.status != VaultStatus::Stopped,
+            VaultError::VaultStopped
+        );
+        // An all-zero key means no usable key exchange, so the MXE could never
+        // derive the shared secret. Cheap to catch here, confusing later.
+        require!(
+            encryption_pubkey != [0u8; 32],
+            VaultError::InvalidEncryptionKey
+        );
+
+        let strategy = &mut ctx.accounts.strategy_state;
+        strategy.vault = ctx.accounts.vault_config.key();
+        strategy.ciphertexts = ciphertexts;
+        strategy.nonce = nonce;
+        strategy.encryption_pubkey = encryption_pubkey;
+        strategy.version = strategy.version.checked_add(1).ok_or(VaultError::Overflow)?;
+        strategy.bump = ctx.bumps.strategy_state;
+
+        // Deliberately carries no ciphertext: an event is a public log, and
+        // there is no reason to publish the payload twice.
+        emit!(StrategySubmitted {
+            vault: strategy.vault,
+            version: strategy.version,
+        });
+        Ok(())
+    }
+
     /// Circuit breaker. Callable by the owner or the guardian.
     ///
     /// The guardian exists so an anomaly can be stopped quickly. It is powerless
@@ -306,6 +350,30 @@ pub struct Withdraw<'info> {
 }
 
 #[derive(Accounts)]
+pub struct SubmitStrategy<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(
+        seeds = [VAULT_SEED, owner.key().as_ref()],
+        bump = vault_config.bump,
+        has_one = owner,
+    )]
+    pub vault_config: Account<'info, VaultConfig>,
+
+    #[account(
+        init_if_needed,
+        payer = owner,
+        space = 8 + StrategyState::INIT_SPACE,
+        seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
+        bump,
+    )]
+    pub strategy_state: Account<'info, StrategyState>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct SetStatus<'info> {
     pub authority: Signer<'info>,
 
@@ -339,6 +407,12 @@ pub struct Withdrawn {
     pub vault: Pubkey,
     pub mint: Pubkey,
     pub amount: u64,
+}
+
+#[event]
+pub struct StrategySubmitted {
+    pub vault: Pubkey,
+    pub version: u32,
 }
 
 #[event]

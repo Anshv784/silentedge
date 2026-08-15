@@ -8,12 +8,21 @@ importers:
 
   .:
     dependencies:
+      '@anchor-lang/core':
+        specifier: ^1.1.2
+        version: 1.1.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@arcium-hq/client':
+        specifier: ^0.14.1
+        version: 0.14.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@coral-xyz/anchor':
         specifier: ^0.32.0
         version: 0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       '@silentedge/config':
         specifier: workspace:*
         version: link:packages/config
+      '@silentedge/sdk':
+        specifier: workspace:*
+        version: link:packages/sdk
       '@silentedge/types':
         specifier: workspace:*
         version: link:packages/types
@@ -54,6 +63,9 @@ importers:
       '@silentedge/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@silentedge/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@silentedge/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -110,6 +122,15 @@ importers:
         specifier: ^1.98.0
         version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
 
+  packages/sdk:
+    dependencies:
+      '@arcium-hq/client':
+        specifier: ^0.14.1
+        version: 0.14.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@silentedge/types':
+        specifier: workspace:*
+        version: link:../types
+
   packages/types: {}
 
 packages:
@@ -117,6 +138,24 @@ packages:
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
     engines: {node: '>=10'}
+
+  '@anchor-lang/borsh@1.1.2':
+    resolution: {integrity: sha512-ilYszz4tZjBc2Kszdq/HIaiYozZuAl8ESUI/PvrHl5PvgaD5WPThVe44aDRcDDDY5Cz2Rdbqa+rlGwWW5i25cQ==}
+    engines: {node: '>=10'}
+    peerDependencies:
+      '@solana/web3.js': ^1.69.1
+
+  '@anchor-lang/core@1.1.2':
+    resolution: {integrity: sha512-rUG9qzxoK1avDtwYBuufiwMm2t18nVt4eU9T35NT8ZzIZ2k9wbUgW9PQ9lEjteem2t/ozyfvjapsLj4algi4pA==}
+    engines: {node: '>=20.18'}
+
+  '@anchor-lang/errors@1.1.2':
+    resolution: {integrity: sha512-+l5fLYF79t7LAYz+YbjjLzmjj6U1za6Q0cH4GBMWx4vUijlPTkm9Oj/cyDPLJG6Hsx+VFxceh7/+qbca5nnEmg==}
+    engines: {node: '>=10'}
+
+  '@arcium-hq/client@0.14.1':
+    resolution: {integrity: sha512-pY4f+l2BH9ylmQgycx5r4LcVa7uZ69pfexpXZZQw0aS8P1/bA5WgXDy//vQtmRWIOD6XiNf6Hw8gGla3s/gCZA==}
+    engines: {node: '>=20.18.0'}
 
   '@babel/code-frame@7.29.7':
     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
@@ -2601,6 +2640,45 @@ packages:
 snapshots:
 
   '@alloc/quick-lru@5.2.0': {}
+
+  '@anchor-lang/borsh@1.1.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))':
+    dependencies:
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      bn.js: 5.2.5
+      buffer-layout: 1.2.2
+
+  '@anchor-lang/core@1.1.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)':
+    dependencies:
+      '@anchor-lang/borsh': 1.1.2(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
+      '@anchor-lang/errors': 1.1.2
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      bn.js: 5.2.5
+      bs58: 4.0.1
+      buffer-layout: 1.2.2
+      eventemitter3: 4.0.7
+      pako: 2.2.0
+      superstruct: 0.15.5
+      toml: 3.0.0
+    transitivePeerDependencies:
+      - bufferutil
+      - encoding
+      - typescript
+      - utf-8-validate
+
+  '@anchor-lang/errors@1.1.2': {}
+
+  '@arcium-hq/client@0.14.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)':
+    dependencies:
+      '@anchor-lang/core': 1.1.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@noble/curves': 1.9.7
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+    transitivePeerDependencies:
+      - bufferutil
+      - encoding
+      - typescript
+      - utf-8-validate
 
   '@babel/code-frame@7.29.7':
     dependencies:

@@ -24,8 +24,12 @@ import { Vault } from "../target/types/vault";
 // Imported rather than restated: if these ever drift from constants.rs, the
 // tests and the web app drift together and the mismatch stays invisible.
 import { BASE_MINT, QUOTE_MINT, VAULT_SEED as VAULT_SEED_STR } from "@silentedge/config";
+import { x25519 } from "@arcium-hq/client";
+import { encryptStrategy, nonceToU128 } from "@silentedge/sdk";
+import { normalize, type Strategy } from "@silentedge/types";
 
 const VAULT_SEED = Buffer.from(VAULT_SEED_STR);
+const STRATEGY_SEED = Buffer.from("strategy");
 
 const DECIMALS = 6;
 const FUNDING = 1_000 * 10 ** DECIMALS;
@@ -353,6 +357,169 @@ describe("vault — custody", () => {
       expect(e.toString()).to.include("ConstraintTokenOwner");
     }
     expect(await balance(ata(victimVault, QUOTE_MINT, true))).to.equal(500);
+  });
+
+  // -------------------------------------------------------------- strategy
+
+  const SECRET_DRAFT: Strategy = {
+    name: "Range trade",
+    rules: [
+      { kind: "entry", value: "150" },
+      { kind: "exit", value: "180.5" },
+      { kind: "stop", value: "120" },
+    ],
+    sizeBps: 1_000,
+  };
+
+  const strategyPda = (vault: PublicKey) =>
+    PublicKey.findProgramAddressSync([STRATEGY_SEED, vault.toBuffer()], program.programId)[0];
+
+  function encryptedDraft() {
+    const mxePriv = x25519.utils.randomSecretKey();
+    const normalized = normalize(SECRET_DRAFT, 1_000);
+    const e = encryptStrategy(normalized, x25519.getPublicKey(mxePriv));
+    return { normalized, e };
+  }
+
+  const submitIx = (owner: Keypair, e: ReturnType<typeof encryptedDraft>["e"]) =>
+    program.methods
+      .submitStrategy(
+        Array.from(e.ciphertexts).map((c) => Array.from(c)) as never,
+        new BN(nonceToU128(e.nonce).toString()),
+        Array.from(e.encryptionPublicKey) as never
+      )
+      .accountsPartial({
+        owner: owner.publicKey,
+        vaultConfig: vaultPda(owner.publicKey),
+        strategyState: strategyPda(vaultPda(owner.publicKey)),
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([owner]);
+
+  it("stores an encrypted strategy", async () => {
+    const { owner, vault } = await setupVault(0);
+    const { e } = encryptedDraft();
+    await submitIx(owner, e).rpc();
+
+    const state = await program.account.strategyState.fetch(strategyPda(vault));
+    expect(state.vault.toBase58()).to.equal(vault.toBase58());
+    expect(state.version).to.equal(1);
+    expect(Buffer.from(state.encryptionPubkey)).to.deep.equal(
+      Buffer.from(e.encryptionPublicKey)
+    );
+    expect(state.ciphertexts).to.have.length(4);
+  });
+
+  it("bumps the version when a strategy is replaced", async () => {
+    const { owner, vault } = await setupVault(0);
+    await submitIx(owner, encryptedDraft().e).rpc();
+    await submitIx(owner, encryptedDraft().e).rpc();
+
+    const state = await program.account.strategyState.fetch(strategyPda(vault));
+    expect(state.version).to.equal(2);
+  });
+
+  it("rejects an all-zero encryption key", async () => {
+    const { owner } = await setupVault(0);
+    const { e } = encryptedDraft();
+    try {
+      await program.methods
+        .submitStrategy(
+          Array.from(e.ciphertexts).map((c) => Array.from(c)) as never,
+          new BN(nonceToU128(e.nonce).toString()),
+          Array.from(new Uint8Array(32)) as never
+        )
+        .accountsPartial({
+          owner: owner.publicKey,
+          vaultConfig: vaultPda(owner.publicKey),
+          strategyState: strategyPda(vaultPda(owner.publicKey)),
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+      assert.fail("expected InvalidEncryptionKey");
+    } catch (e) {
+      expect(e.toString()).to.include("InvalidEncryptionKey");
+    }
+  });
+
+  it("stops a stranger submitting a strategy to someone else's vault", async () => {
+    const { owner, vault } = await setupVault(0);
+    await submitIx(owner, encryptedDraft().e).rpc();
+
+    const attacker = await newFundedKeypair();
+    const { e } = encryptedDraft();
+    try {
+      await program.methods
+        .submitStrategy(
+          Array.from(e.ciphertexts).map((c) => Array.from(c)) as never,
+          new BN(nonceToU128(e.nonce).toString()),
+          Array.from(e.encryptionPublicKey) as never
+        )
+        .accountsPartial({
+          owner: attacker.publicKey,
+          vaultConfig: vault, // victim's vault
+          strategyState: strategyPda(vault),
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([attacker])
+        .rpc();
+      assert.fail("stranger replaced another user's strategy");
+    } catch (e) {
+      expect(e.toString()).to.include("ConstraintSeeds");
+    }
+    const state = await program.account.strategyState.fetch(strategyPda(vault));
+    expect(state.version, "victim's strategy was replaced").to.equal(1);
+  });
+
+  /**
+   * The claim under test: submitting a strategy puts no plaintext on chain.
+   *
+   * Checks the actual bytes of the confirmed transaction and of the stored
+   * account, rather than trusting that encryption happened upstream.
+   */
+  it("puts no plaintext strategy value on chain", async () => {
+    const { owner, vault } = await setupVault(0);
+    const { normalized, e } = encryptedDraft();
+    const signature = await submitIx(owner, e).rpc();
+
+    const tx = await connection.getTransaction(signature, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0,
+    });
+    const account = await connection.getAccountInfo(strategyPda(vault));
+
+    const haystacks: [string, Buffer][] = [
+      ["transaction", Buffer.from(JSON.stringify(tx))],
+      ["account data", account!.data],
+      ["logs", Buffer.from((tx!.meta?.logMessages ?? []).join("\n"))],
+    ];
+
+    const secrets = [
+      normalized.entryBelow,
+      normalized.exitAbove,
+      normalized.stopBelow,
+    ];
+
+    for (const [where, hay] of haystacks) {
+      for (const secret of secrets) {
+        // Decimal form, as it would appear in any log or JSON field.
+        expect(hay.includes(Buffer.from(secret.toString())), `${secret} as text in ${where}`)
+          .to.equal(false);
+
+        // Little-endian u64, as it would appear if written raw.
+        const le = Buffer.alloc(8);
+        le.writeBigUInt64LE(secret);
+        expect(hay.includes(le), `${secret} as bytes in ${where}`).to.equal(false);
+      }
+      // The strategy name never leaves the browser at all.
+      expect(hay.includes(Buffer.from("Range trade")), `name in ${where}`).to.equal(false);
+    }
+
+    // Sanity: the ciphertext *is* there, so the search above was looking in the
+    // right place rather than at an empty buffer.
+    expect(account!.data.includes(Buffer.from(e.ciphertexts[0])), "ciphertext missing")
+      .to.equal(true);
   });
 
   // -------------------------------------------------------------- status
