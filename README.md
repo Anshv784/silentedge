@@ -8,12 +8,14 @@ visible to the platform operator or to any single node running the computation.
 
 > **Status: in progress.** Vault program (custody, deposits, withdrawals,
 > pause/stop), the web dashboard, the strategy builder, and client-side
-> strategy encryption are built and tested against a devnet fork. A real Arcium
-> computation runs end to end on the devnet cluster
-> ([`docs/arcium-hello-world.md`](docs/arcium-hello-world.md)), but the vault's
-> own strategy evaluation is not wired to it yet, so the app still encrypts to a
-> development key and says so. Trading is not built. Nothing here is audited.
-> Do not use with real funds.
+> strategy encryption are built and tested against a devnet fork. On the live
+> Arcium devnet cluster, a real computation runs end to end
+> ([`docs/arcium-hello-world.md`](docs/arcium-hello-world.md)) and a strategy
+> persists as `Enc<Mxe, Strategy>` across computations
+> ([`docs/persistent-strategy-state.md`](docs/persistent-strategy-state.md)).
+> The vault's own evaluation is not wired to it yet, so the app still encrypts
+> to a development key and says so. Trading is not built. Nothing here is
+> audited. Do not use with real funds.
 
 ---
 
@@ -121,6 +123,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 | [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md) | Why MagicBlock is excluded |
 | [`docs/testing.md`](docs/testing.md) | Test environment, coverage, and a false-pass trap |
 | [`docs/arcium-hello-world.md`](docs/arcium-hello-world.md) | The smallest real Arcium computation, and what it cost |
+| [`docs/persistent-strategy-state.md`](docs/persistent-strategy-state.md) | `Enc<Mxe, Strategy>` surviving between computations |
 
 Start with `RESEARCH.md` — `ARCHITECTURE.md` assumes its findings.
 

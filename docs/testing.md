@@ -106,6 +106,7 @@ Mapped to THREAT_MODEL.md §9. 58 tests, plus one that skips without a cluster.
 | Strategy on chain | storage, version bump, zero-key rejection, stranger rejected, **no plaintext in transaction, account, or logs** |
 
 | Arcium | `x + 10` end to end on the devnet cluster — **passes**; skips only when no cluster is reachable. See [arcium-hello-world.md](arcium-hello-world.md) |
+| Strategy state | `Enc<Mxe, Strategy>` stored then read back by a later computation — **passes** on devnet. See [persistent-strategy-state.md](persistent-strategy-state.md) |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
 pinning, oracle guards, swap execution. Those arrive with their phases.

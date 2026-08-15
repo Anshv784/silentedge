@@ -17,8 +17,16 @@
 
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
+// Not re-exported by the prelude in 0.14.1.
+use arcium_client::idl::arcium::types::CallbackAccount;
 
 const COMP_DEF_OFFSET_ADD_TEN: u32 = comp_def_offset("add_ten");
+const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy");
+const COMP_DEF_OFFSET_EXPORT_STRATEGY: u32 = comp_def_offset("export_strategy");
+
+/// Four encrypted scalars: entry_below, exit_above, stop_below, size_bps.
+pub const STRATEGY_FIELDS: usize = 4;
+pub const STORED_STRATEGY_SEED: &[u8] = b"stored_strategy";
 
 declare_id!("FPZkMe1NgT3oug3iLoaWsnPjGAEr3p7mwporhfVqU7Lk");
 
@@ -102,6 +110,169 @@ pub mod hello_arcium {
         });
         Ok(())
     }
+
+    // ---------------------------------------------------------------
+    // Persistent confidential strategy state
+    // ---------------------------------------------------------------
+
+    pub fn init_store_strategy_comp_def(ctx: Context<InitStoreStrategyCompDef>) -> Result<()> {
+        init_computation_def(ctx.accounts, None)?;
+        Ok(())
+    }
+
+    pub fn init_export_strategy_comp_def(ctx: Context<InitExportStrategyCompDef>) -> Result<()> {
+        init_computation_def(ctx.accounts, None)?;
+        Ok(())
+    }
+
+    /// Create the account that will hold a user's MXE-encrypted strategy.
+    ///
+    /// Separate from `store_strategy` because accounts cannot be created inside
+    /// an Arcium callback — the callback can only write to accounts that
+    /// already exist and were declared writable when the computation was queued.
+    pub fn init_stored_strategy(ctx: Context<InitStoredStrategy>) -> Result<()> {
+        let stored = &mut ctx.accounts.stored_strategy;
+        stored.owner = ctx.accounts.owner.key();
+        stored.version = 0;
+        stored.bump = ctx.bumps.stored_strategy;
+        Ok(())
+    }
+
+    /// Re-encrypt a user's strategy from `Enc<Shared, _>` to `Enc<Mxe, _>`.
+    ///
+    /// Argument order follows the circuit signature: for `Enc<Shared, T>` that
+    /// is the x25519 public key, then the nonce, then one ciphertext per field.
+    pub fn store_strategy(
+        ctx: Context<StoreStrategy>,
+        computation_offset: u64,
+        ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
+        pubkey: [u8; 32],
+        nonce: u128,
+    ) -> Result<()> {
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        let args = ArgBuilder::new()
+            .x25519_pubkey(pubkey)
+            .plaintext_u128(nonce)
+            .encrypted_u64(ciphertexts[0])
+            .encrypted_u64(ciphertexts[1])
+            .encrypted_u64(ciphertexts[2])
+            .encrypted_u64(ciphertexts[3])
+            .build();
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            vec![StoreStrategyCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                // The callback writes the MXE ciphertext here, so it has to be
+                // declared writable at queue time as well as in the callback
+                // account struct. Marking only one of the two fails silently.
+                &[CallbackAccount {
+                    pubkey: ctx.accounts.stored_strategy.key(),
+                    is_writable: true,
+                }],
+            )?],
+            1,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+
+    #[arcium_callback(encrypted_ix = "store_strategy")]
+    pub fn store_strategy_callback(
+        ctx: Context<StoreStrategyCallback>,
+        output: SignedComputationOutputs<StoreStrategyOutput>,
+    ) -> Result<()> {
+        let o = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(StoreStrategyOutput { field_0 }) => field_0,
+            Err(_) => return Err(HelloError::AbortedComputation.into()),
+        };
+
+        // MXE-encrypted: there is no shared key here, and no client can decrypt
+        // this. The program stores opaque bytes it could not read if it wanted to.
+        let stored = &mut ctx.accounts.stored_strategy;
+        stored.ciphertexts = o.ciphertexts;
+        stored.nonce = o.nonce;
+        stored.version = stored.version.checked_add(1).ok_or(HelloError::Overflow)?;
+
+        emit!(StrategyStored {
+            owner: stored.owner,
+            version: stored.version,
+        });
+        Ok(())
+    }
+
+    /// Read persisted state back, re-encrypted to the caller.
+    ///
+    /// The circuit cannot tell who asked, so the account constraints do it:
+    /// `stored_strategy` is seeded by `owner`, and `owner` must sign. Without
+    /// that, anyone could queue this with their own key and read the strategy.
+    pub fn export_strategy(
+        ctx: Context<ExportStrategy>,
+        computation_offset: u64,
+        reader_pubkey: [u8; 32],
+        reader_nonce: u128,
+    ) -> Result<()> {
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        let stored = &ctx.accounts.stored_strategy;
+        require!(stored.version > 0, HelloError::NoStrategyStored);
+
+        // Enc<Mxe, T> takes only nonce + ciphertexts — no x25519 key, because
+        // there is no shared secret. The trailing `reader: Shared` parameter is
+        // what needs the key.
+        let args = ArgBuilder::new()
+            .plaintext_u128(stored.nonce)
+            .encrypted_u64(stored.ciphertexts[0])
+            .encrypted_u64(stored.ciphertexts[1])
+            .encrypted_u64(stored.ciphertexts[2])
+            .encrypted_u64(stored.ciphertexts[3])
+            .x25519_pubkey(reader_pubkey)
+            .plaintext_u128(reader_nonce)
+            .build();
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            vec![ExportStrategyCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[],
+            )?],
+            1,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+
+    #[arcium_callback(encrypted_ix = "export_strategy")]
+    pub fn export_strategy_callback(
+        ctx: Context<ExportStrategyCallback>,
+        output: SignedComputationOutputs<ExportStrategyOutput>,
+    ) -> Result<()> {
+        let o = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(ExportStrategyOutput { field_0 }) => field_0,
+            Err(_) => return Err(HelloError::AbortedComputation.into()),
+        };
+
+        emit!(StrategyRead {
+            ciphertexts: o.ciphertexts,
+            nonce: o.nonce.to_le_bytes(),
+        });
+        Ok(())
+    }
 }
 
 #[queue_computation_accounts("add_ten", payer)]
@@ -179,6 +350,219 @@ pub struct InitAddTenCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// A user's strategy, encrypted to the MXE cluster.
+///
+/// The program writes and reads these bytes and cannot interpret them. Only the
+/// cluster acting together can decrypt `Enc<Mxe, _>` — not the program, not the
+/// operator, and not the owner's browser.
+#[account]
+#[derive(InitSpace, Debug)]
+pub struct StoredStrategy {
+    pub owner: Pubkey,
+    pub ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
+    pub nonce: u128,
+    /// Incremented on every store. Zero means nothing has been stored yet.
+    pub version: u32,
+    pub bump: u8,
+}
+
+#[derive(Accounts)]
+pub struct InitStoredStrategy<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + StoredStrategy::INIT_SPACE,
+        seeds = [STORED_STRATEGY_SEED, owner.key().as_ref()],
+        bump,
+    )]
+    pub stored_strategy: Account<'info, StoredStrategy>,
+    pub system_program: Program<'info, System>,
+}
+
+#[queue_computation_accounts("store_strategy", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct StoreStrategy<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// Seeded by `payer`, so a signer can only ever write their own strategy.
+    #[account(
+        mut,
+        seeds = [STORED_STRATEGY_SEED, payer.key().as_ref()],
+        bump = stored_strategy.bump,
+        has_one = owner @ HelloError::NotStrategyOwner,
+    )]
+    pub stored_strategy: Account<'info, StoredStrategy>,
+    /// CHECK: bound to stored_strategy by the has_one constraint above.
+    pub owner: UncheckedAccount<'info>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_STRATEGY))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Account<'info, FeePool>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Account<'info, ClockAccount>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[callback_accounts("store_strategy")]
+#[derive(Accounts)]
+pub struct StoreStrategyCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_STRATEGY))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: address is validated by the Arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint
+    pub instructions_sysvar: UncheckedAccount<'info>,
+    /// Writable here AND in the CallbackAccount list passed at queue time.
+    #[account(mut)]
+    pub stored_strategy: Account<'info, StoredStrategy>,
+}
+
+#[queue_computation_accounts("export_strategy", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct ExportStrategy<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// Seeded by `payer`: the circuit cannot authenticate a reader, so this does.
+    #[account(
+        seeds = [STORED_STRATEGY_SEED, payer.key().as_ref()],
+        bump = stored_strategy.bump,
+    )]
+    pub stored_strategy: Account<'info, StoredStrategy>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EXPORT_STRATEGY))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Account<'info, FeePool>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Account<'info, ClockAccount>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[callback_accounts("export_strategy")]
+#[derive(Accounts)]
+pub struct ExportStrategyCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EXPORT_STRATEGY))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: address is validated by the Arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint
+    pub instructions_sysvar: UncheckedAccount<'info>,
+}
+
+#[init_computation_definition_accounts("store_strategy", payer)]
+#[derive(Accounts)]
+pub struct InitStoreStrategyCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by arcium program. Not initialized yet.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
+#[init_computation_definition_accounts("export_strategy", payer)]
+#[derive(Accounts)]
+pub struct InitExportStrategyCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by arcium program. Not initialized yet.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
+#[event]
+pub struct StrategyStored {
+    pub owner: Pubkey,
+    pub version: u32,
+}
+
+/// Ciphertext only. The program emits a strategy it cannot read.
+#[event]
+pub struct StrategyRead {
+    pub ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
+    pub nonce: [u8; 16],
+}
+
 /// Carries ciphertext, not a sum. The program never learns the answer.
 #[event]
 pub struct SumEvent {
@@ -190,4 +574,13 @@ pub struct SumEvent {
 pub enum HelloError {
     #[msg("The computation was aborted")]
     AbortedComputation,
+
+    #[msg("Signer does not own this strategy")]
+    NotStrategyOwner,
+
+    #[msg("No strategy has been stored yet")]
+    NoStrategyStored,
+
+    #[msg("Arithmetic overflow")]
+    Overflow,
 }
