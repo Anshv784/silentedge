@@ -6,10 +6,10 @@ Create a rule-based trading bot. Your funds stay in a vault only you can withdra
 Your strategy parameters are evaluated inside multi-party computation, so they are not
 visible to the platform operator or to any single node running the computation.
 
-> **Status: in progress.** Phase 2 complete — the non-custodial vault program
-> (custody, deposits, withdrawals, pause/stop) is implemented and tested against
-> a devnet fork. Strategy, encryption, and trading are not built yet.
-> Nothing here is audited. Do not use with real funds.
+> **Status: in progress.** Vault program (custody, deposits, withdrawals,
+> pause/stop) and a read-only web dashboard are built and tested against a
+> devnet fork. Deposit/withdraw UI, strategy, encryption, and trading are not
+> built yet. Nothing here is audited. Do not use with real funds.
 
 ---
 
@@ -98,7 +98,7 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 |------|----------|
 | `programs/vault/` | Anchor program — custody, limits, intents, swap CPI |
 | `encrypted-ixs/` | Arcis circuits (Arcium workspace convention) |
-| `apps/web/` | Next.js — strategy builder, wallet, client-side encryption |
+| `apps/web/` | Next.js — wallet, balances, strategy builder, client-side encryption |
 | `apps/api/` | Untrusted service — scheduling, indexing, RPC relay |
 | `packages/sdk/` | TypeScript client: encryption, transaction building |
 | `packages/types/` | Shared strategy and intent types |

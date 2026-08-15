@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/*
+ * Instrument-panel palette.
+ *
+ * Cool paper rather than warm cream, ink rather than pure black. The two
+ * semantic accents are load-bearing, not decorative: `exposed` marks anything
+ * a stranger can read on-chain, `shielded` marks anything that stays private.
+ * Nothing else in the UI is allowed to use them.
+ */
+@theme {
+  --color-paper: #eef1f4;
+  --color-panel: #f8fafb;
+  --color-ink: #10161c;
+  --color-ink-soft: #5a6672;
+  --color-rule: #cfd6dd;
+  --color-signal: #1b3fa8;
+  --color-exposed: #9a6212;
+  --color-shielded: #0f6b5c;
+
+  --font-display: var(--font-space-grotesk), ui-sans-serif, system-ui;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    font-family: var(--font-display);
+  }
+  /* Every figure and address is monospace: this is a readout, not prose. */
+  .tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+}
+
+/* Hairline grid backdrop — a measuring surface, kept nearly subliminal. */
+.grid-field {
+  background-image: linear-gradient(
+      to right,
+      color-mix(in srgb, var(--color-rule) 45%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-rule) 45%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 28px 28px;
+}
+
+/* The shielded readout: legible as *structure*, unreadable as *value*. */
+.redacted {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--color-shielded) 22%, transparent) 0 5px,
+    transparent 5px 10px
+  );
+  color: transparent;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Wallet-adapter modal, restyled to match rather than ship its purple default. */
+.wallet-adapter-button-trigger {
+  background: var(--color-signal) !important;
+  border-radius: 2px !important;
+  font-family: var(--font-display) !important;
+  font-size: 13px !important;
+  height: 38px !important;
+  letter-spacing: 0.02em;
+}
+.wallet-adapter-modal-wrapper {
+  background: var(--color-panel) !important;
+  border-radius: 3px !important;
+}
+.wallet-adapter-modal-title {
+  color: var(--color-ink) !important;
+}

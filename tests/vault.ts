@@ -21,11 +21,11 @@ import {
 import { assert, expect } from "chai";
 
 import { Vault } from "../target/types/vault";
+// Imported rather than restated: if these ever drift from constants.rs, the
+// tests and the web app drift together and the mismatch stays invisible.
+import { BASE_MINT, QUOTE_MINT, VAULT_SEED as VAULT_SEED_STR } from "@silentedge/config";
 
-// Must match programs/vault/src/constants.rs
-const BASE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
-const QUOTE_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
-const VAULT_SEED = Buffer.from("vault");
+const VAULT_SEED = Buffer.from(VAULT_SEED_STR);
 
 const DECIMALS = 6;
 const FUNDING = 1_000 * 10 ** DECIMALS;
@@ -411,6 +411,36 @@ describe("vault — custody", () => {
    * if a future phase adds an account, this fails and forces a deliberate
    * decision rather than a silent new dependency.
    */
+  /**
+   * The web app reads `status` at a fixed byte offset instead of pulling Anchor
+   * into the browser bundle. That offset is only correct as long as the fields
+   * before it in VaultConfig keep their sizes, and nothing about changing
+   * `state.rs` would otherwise fail. This pins it.
+   */
+  it("vault status sits at the byte offset the web app reads", async () => {
+    const STATUS_OFFSET = 8 + 32 + 32 + 32 + 18; // discriminator + 3 pubkeys + RiskLimits
+    const { owner, vault } = await setupVault(0);
+
+    const active = await connection.getAccountInfo(vault);
+    expect(active!.data[STATUS_OFFSET], "Active should encode as 0").to.equal(0);
+
+    await program.methods
+      .pause()
+      .accountsPartial({ authority: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+    const paused = await connection.getAccountInfo(vault);
+    expect(paused!.data[STATUS_OFFSET], "Paused should encode as 1").to.equal(1);
+
+    await program.methods
+      .stop()
+      .accountsPartial({ authority: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+    const stopped = await connection.getAccountInfo(vault);
+    expect(stopped!.data[STATUS_OFFSET], "Stopped should encode as 2").to.equal(2);
+  });
+
   it("withdraw's account list stays minimal and dependency-free", async () => {
     const owner = Keypair.generate();
     const vault = vaultPda(owner.publicKey);
