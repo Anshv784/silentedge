@@ -63,6 +63,73 @@ mod circuits {
         Mxe::get().from_arcis(strategy)
     }
 
+    /// Evaluate a private strategy against a public price.
+    ///
+    /// The whole product in one function: secret thresholds meet a public
+    /// market price inside MPC, and only the resulting action escapes.
+    ///
+    /// # What is deliberately not hidden
+    ///
+    /// `price` and `vault_value` are plaintext parameters. Every Arx node sees
+    /// them, and they are visible on chain in the queueing transaction. That is
+    /// correct — the price is public information and the vault's balance is a
+    /// public token account. Encrypting them would cost gates and hide nothing.
+    ///
+    /// The return value is `.reveal()`ed because a trade cannot be executed
+    /// without it. This is the minimum: a side and a size. Nothing about *why*
+    /// the action fired is returned — which threshold was crossed, how far past
+    /// it the price is, or what the other thresholds are.
+    ///
+    /// # Branch structure
+    ///
+    /// Both branches of a conditional always execute in MPC, so the comparisons
+    /// below cost the same regardless of the outcome and take the same time.
+    /// A rule that is switched off is a sentinel that can never match rather
+    /// than a skipped branch, so "off" is indistinguishable from "on".
+    ///
+    /// The two `.reveal()` calls sit at the end, outside every conditional —
+    /// Arcis rejects revealing inside a non-constant branch, and that rule
+    /// exists precisely to stop the control flow leaking.
+    #[instruction]
+    pub fn evaluate_strategy(
+        strategy_ctxt: Enc<Mxe, Strategy>,
+        price: u64,
+        vault_value: u64,
+    ) -> (u8, u64) {
+        let s = strategy_ctxt.to_arcis();
+
+        let stop_hit = price < s.stop_below;
+        let take_profit = price > s.exit_above;
+        let entry_hit = price < s.entry_below;
+
+        // Selling wins over buying. A price below the stop is also below the
+        // entry, and exiting a losing position must not be read as an entry.
+        let sell = stop_hit | take_profit;
+        let action: u8 = if sell {
+            2
+        } else if entry_hit {
+            1
+        } else {
+            0
+        };
+
+        // Widened to u128 for the multiply: vault_value is in base units and
+        // size_bps can be 10_000, which overflows u64 for large vaults.
+        let sized = ((vault_value as u128 * s.size_bps as u128) / 10_000u128) as u64;
+
+        // A stop exits the whole position; anything else trades the configured
+        // fraction. HOLD trades nothing.
+        let amount = if stop_hit {
+            vault_value
+        } else if action == 0 {
+            0
+        } else {
+            sized
+        };
+
+        (action.reveal(), amount.reveal())
+    }
+
     /// Read persisted strategy state back out, re-encrypted to a reader.
     ///
     /// Proves the stored `Enc<Mxe, Strategy>` is intact and usable in a *later*

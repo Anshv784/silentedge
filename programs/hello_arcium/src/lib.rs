@@ -23,6 +23,7 @@ use arcium_client::idl::arcium::types::CallbackAccount;
 const COMP_DEF_OFFSET_ADD_TEN: u32 = comp_def_offset("add_ten");
 const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy");
 const COMP_DEF_OFFSET_EXPORT_STRATEGY: u32 = comp_def_offset("export_strategy");
+const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy");
 
 /// Four encrypted scalars: entry_below, exit_above, stop_below, size_bps.
 pub const STRATEGY_FIELDS: usize = 4;
@@ -251,6 +252,90 @@ pub mod hello_arcium {
             0,
             0,
         )?;
+        Ok(())
+    }
+
+    pub fn init_evaluate_strategy_comp_def(
+        ctx: Context<InitEvaluateStrategyCompDef>,
+    ) -> Result<()> {
+        init_computation_def(ctx.accounts, None)?;
+        Ok(())
+    }
+
+    /// Evaluate the stored strategy against a public price.
+    ///
+    /// `price` and `vault_value` are plaintext on purpose. The price is public
+    /// information and the vault balance is a public token account; encrypting
+    /// them would cost gates and hide nothing.
+    ///
+    /// Anyone may queue this — evaluation is not a privileged action, and a
+    /// permissionless scheduler is what stops the operator being able to censor
+    /// a user's bot by simply not running it. The result authorizes nothing on
+    /// its own; that is the trading phase's job.
+    pub fn evaluate_strategy(
+        ctx: Context<EvaluateStrategy>,
+        computation_offset: u64,
+        price: u64,
+        vault_value: u64,
+    ) -> Result<()> {
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        let stored = &ctx.accounts.stored_strategy;
+        require!(stored.version > 0, HelloError::NoStrategyStored);
+
+        // Enc<Mxe, T> needs no x25519 key — there is no shared secret. Order
+        // must match the circuit signature: the encrypted struct, then the two
+        // plaintext scalars.
+        let args = ArgBuilder::new()
+            .plaintext_u128(stored.nonce)
+            .encrypted_u64(stored.ciphertexts[0])
+            .encrypted_u64(stored.ciphertexts[1])
+            .encrypted_u64(stored.ciphertexts[2])
+            .encrypted_u64(stored.ciphertexts[3])
+            .plaintext_u64(price)
+            .plaintext_u64(vault_value)
+            .build();
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            vec![EvaluateStrategyCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[],
+            )?],
+            1,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+
+    /// Receive the decision.
+    ///
+    /// The revealed pair is the minimum a trade needs: a side and a size.
+    /// Nothing about *why* it fired comes back — which threshold was crossed,
+    /// how far past it the price is, or what the other thresholds are.
+    #[arcium_callback(encrypted_ix = "evaluate_strategy")]
+    pub fn evaluate_strategy_callback(
+        ctx: Context<EvaluateStrategyCallback>,
+        output: SignedComputationOutputs<EvaluateStrategyOutput>,
+    ) -> Result<()> {
+        let o = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(v) => v,
+            Err(_) => return Err(HelloError::AbortedComputation.into()),
+        };
+
+        // A tuple return nests one level deeper than a single return:
+        // field_0 is the tuple struct, not the first element.
+        emit!(StrategyEvaluated {
+            action: o.field_0.field_0,
+            amount: o.field_0.field_1,
+        });
         Ok(())
     }
 
@@ -510,6 +595,89 @@ pub struct ExportStrategyCallback<'info> {
     pub instructions_sysvar: UncheckedAccount<'info>,
 }
 
+#[queue_computation_accounts("evaluate_strategy", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct EvaluateStrategy<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// Not seeded by `payer`: anyone may evaluate. The strategy stays secret
+    /// either way, and permissionless evaluation is what stops the operator
+    /// censoring a user's bot by declining to run it.
+    #[account(
+        seeds = [STORED_STRATEGY_SEED, stored_strategy.owner.as_ref()],
+        bump = stored_strategy.bump,
+    )]
+    pub stored_strategy: Account<'info, StoredStrategy>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EVALUATE_STRATEGY))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Account<'info, FeePool>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Account<'info, ClockAccount>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[callback_accounts("evaluate_strategy")]
+#[derive(Accounts)]
+pub struct EvaluateStrategyCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EVALUATE_STRATEGY))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: address is validated by the Arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint
+    pub instructions_sysvar: UncheckedAccount<'info>,
+}
+
+#[init_computation_definition_accounts("evaluate_strategy", payer)]
+#[derive(Accounts)]
+pub struct InitEvaluateStrategyCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by arcium program. Not initialized yet.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
 #[init_computation_definition_accounts("store_strategy", payer)]
 #[derive(Accounts)]
 pub struct InitStoreStrategyCompDef<'info> {
@@ -548,6 +716,15 @@ pub struct InitExportStrategyCompDef<'info> {
     pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
+}
+
+/// The only thing a trade needs: a side and a size.
+///
+/// 0 = HOLD, 1 = BUY, 2 = SELL. `amount` is in vault base units.
+#[event]
+pub struct StrategyEvaluated {
+    pub action: u8,
+    pub amount: u64,
 }
 
 #[event]

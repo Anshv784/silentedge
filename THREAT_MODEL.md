@@ -43,7 +43,9 @@ converts this document into SECURITY_AUDIT.md with evidence.
 |----|--------|-----------|----------|
 | **T-7** | **Operator recovers strategies via `migrate-cluster`** | Investigated in depth. Fully operator-controlled clusters are a *documented supported feature* ("Invite only Arx nodes controlled by the organization"). There is **no CLI command to transfer, burn, or timelock the MXE authority**, and Recovery Peers have **no documented veto**. **Cluster pinning (ARCHITECTURE §7.1)** makes migration halt the system loudly and publicly. | **PARTIALLY MITIGATED.** Future strategies and all trade authorization are protected (T-37). **Strategy ciphertext already published on-chain remains decryptable** by an operator who migrates — inherent, since anything the MXE computes on, the MXE key decrypts, and on-chain data is permanent. Disclose explicitly. Gate mainnet on Q-A. |
 | **T-8** | Backend sees plaintext strategy | Encryption is client-side in the browser; backend receives ciphertext only. Verified in Phase 6 by inspecting network requests, logs, DB, and transaction data. | Depends on frontend integrity — see T-15. |
-| **T-9** | **Threshold inference from public trades** | An observer records Pyth price at each evaluation and which produced a trade, bounding `entry_below` from both sides; enough samples narrow it arbitrarily. Partial mitigations: jittered evaluation cadence, randomised size (`ArcisRNG`), threshold *bands* rather than points. | **Inherent and unfixable.** Acting publicly reveals information about why you acted. Mitigations slow inference; they do not prevent it. Must be disclosed prominently — this is the single most likely place for the product to overclaim. |
+| **T-9** | **Threshold inference from public trades** | Each evaluation yields a `(price, action)` pair and each pair is an inequality; enough of them squeeze every threshold between tight bounds. Partial mitigations: jittered cadence, randomised size (`ArcisRNG`), threshold *bands* rather than points. | **Inherent and unfixable.** Acting publicly reveals why you acted. Bounds tighten roughly logarithmically in the number of evaluations straddling a threshold — days, not years, for an active bot. Must be disclosed prominently. Full analysis: [`docs/what-is-private.md`](docs/what-is-private.md). |
+| **T-38** | **`size_bps` is fully recoverable from a single trade** | `amount = vault_value × size_bps / 10_000`, and `vault_value` is public in the same transaction while `amount` is revealed. One non-HOLD evaluation discloses `size_bps` **exactly**. | **Not mitigated.** One of the four "secret" fields is not secret in practice. **Recommendation: move `size_bps` into public vault config before mainnet** — keeping it encrypted implies a protection that does not exist, which is worse than storing it in the clear. |
+| **T-39** | **Trade size distinguishes a stop from a take-profit** | A stop exits the whole position (`amount == vault_value`); a take-profit trades the configured fraction. Both return `action = 2`, but the amounts differ, so an observer learns *which* sell rule fired — and therefore whether price sat below `stop_below` or above `exit_above`. | **Inherent** to "a stop is a full exit". Making them indistinguishable means sizing them identically, which changes what the product does. Feeds T-9: it converts one ambiguous observation into two precise ones. |
 | **T-10** | Single node reads a strategy | Cerberus dishonest-majority: 1-of-n honest suffices for privacy. | Holds unless *all* nodes collude (A4). |
 | **T-11** | All cluster nodes collude | None available in-protocol. | **Accepted risk.** Mitigation path: run our own Arx node in the cluster, per Arcium's own guidance, guaranteeing one honest participant. Recommended for V2 (**Q4**). |
 | **T-12** | Timing side channel reveals which branch fired | Arcis executes both branches of every non-constant conditional (RESEARCH §2.7) — the circuit is fixed-shape and data-independent by construction. | Low, and it comes free from the MPC model. |
@@ -108,7 +110,8 @@ converts this document into SECURITY_AUDIT.md with evidence.
 1. **T-7 — historical strategy ciphertext is recoverable by the MXE authority.** Cannot be
    fixed with current Arcium features. Cluster pinning stops everything except retroactive
    decryption of already-published ciphertext. **Must be disclosed, not claimed away.**
-2. **T-9 — Threshold inference from public trade history.** Unfixable; disclose prominently.
+2. **T-9 — Threshold inference from public trade history.** Unfixable; disclose prominently. Sharpened by T-38 and T-39, which turn ambiguous observations into precise ones.
+2b. **T-38 — `size_bps` recoverable from one trade.** Move it to public config; do not claim it is secret.
 3. **T-37 — Forged attestation via migrated cluster.** Mitigated by cluster pinning, but the
    constraint is load-bearing for custody and must never be relaxed.
 4. **T-3 — Program upgrade authority.** Must be a timelocked multisig before mainnet.
@@ -151,7 +154,10 @@ rejected.
 execution outside deviation band → rejected.
 
 **Confidentiality:** plaintext strategy absent from network requests, server logs, database,
-and transaction data (Phase 6) · action-only reveal confirmed in callback data.
+and transaction data (Phase 6) · action-only reveal confirmed in callback data · no threshold
+present in the evaluation transaction's **serialized message bytes**, not merely absent from
+its JSON rendering — instruction data is base58 there, so searching the JSON passes vacuously
+whether or not the secret is present.
 
 **Liveness:** cluster abort → no intent, no trade, no default action · expired computation →
 fee reclaimed · executor absent → user can self-execute.
