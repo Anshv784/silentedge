@@ -122,6 +122,33 @@ Also note the Arcium macros read the compiled circuit artifacts, so
 `cargo build` alone fails with `custom attribute panicked`. Always
 `arcium build`, which compiles the circuit first.
 
+### And a matching split on the TypeScript side
+
+Anchor 1.x ships a **different TS client** from the 0.x line:
+
+| Program built with | TS client |
+|--------------------|-----------|
+| `@coral-xyz/anchor` 0.3x | `@coral-xyz/anchor` |
+| `anchor-lang` 1.x (what Arcium requires) | `@anchor-lang/core` |
+
+Driving an Arcium program with `@coral-xyz/anchor` gets far enough to look like
+it works — the workspace resolves, the program ID is right, accounts derive
+correctly — and then fails inside the provider with `Unknown action 'undefined'`
+at `sendAndConfirm`. The error names nothing useful; the cause is the client
+mismatch.
+
+`tests/hello-arcium.ts` therefore imports `@anchor-lang/core`, while the vault
+tests stay on `@coral-xyz/anchor`, which is fine for a plain Anchor program.
+When the vault gains its own Arcium instructions, its tests will have to move
+too.
+
+Two smaller differences that follow from the switch:
+
+- `@anchor-lang/core` does **not** re-export `BN`. Import it from `bn.js`.
+- It exports `AnchorProvider`, `Program`, `getProvider`, `setProvider`,
+  `workspace`, `utils`, and `web3` — but no `BN`, so the usual
+  `anchor.BN` idiom fails at runtime with `BN is not a constructor`.
+
 ## Running it
 
 The test lives in `tests/hello-arcium.ts` and skips when no MXE is reachable.
@@ -189,6 +216,64 @@ data account, so a 466 KB program wants ~6.5 SOL. Passing
 `--max-len <exact size>` allocates 1x instead (~3.25 SOL) at the cost of never
 being able to upgrade to a larger binary — fine for a disposable demo, wrong for
 the vault.
+
+## Registering a circuit is three steps, not one
+
+Easy to get wrong, because the first two succeed on their own and leave an
+account that looks finished:
+
+1. `init_*_comp_def` — creates the computation definition account.
+2. `uploadCircuit` — writes the circuit bytes into buffer accounts, chunked.
+3. **finalize** — marks the definition usable.
+
+Skip step 3 and queueing fails with `ComputationDefinitionNotCompleted`
+(error 6300) even though the account exists, `circuitLen` matches the file, and
+the buffer reports `isCompleted: true`. Those fields describe the *upload*, not
+the definition.
+
+`getCircuitState(compDefAcc.circuitSource)` is the field that actually answers
+the question — `OnchainPending` versus `OnchainFinalized`. Note also that
+`uploadCircuit` returns early when state is anything other than `OnchainPending`,
+so re-running it after a partial upload logs `skipped` and does nothing.
+
+A related trap in our own test: it skipped `initAddTenCompDef` when the comp def
+account already existed, which also skipped the upload. Account existence is not
+the same as circuit readiness.
+
+## Where this got to on devnet
+
+The pipeline works up to, but not including, a successful result.
+
+| Step | Result |
+|------|--------|
+| Circuit compiles (`arcium build`) | ✅ |
+| Program deployed to devnet | ✅ |
+| MXE initialized, cluster key material generated | ✅ |
+| Circuit uploaded and finalized (`OnchainFinalized`) | ✅ |
+| Computation queued on chain | ✅ |
+| **Cluster picks it up and calls back** | ✅ |
+| **`verify_output` accepts the result** | ❌ — every callback aborts |
+
+The devnet cluster (offset `456`) is genuinely live: two activated nodes with an
+aggregated BLS public key set, and it *is* fetching our queued computations and
+delivering `CallbackComputation` transactions to our program. Every one of them
+fails `verify_output`, which our handler maps to `AbortedComputation`, and
+Arcium then runs `ReclaimFailureRentIdempotent` — its failure path.
+
+So the computation is aborting on the cluster side, not being mishandled on
+ours. Cerberus is a **detect-and-abort** protocol (RESEARCH §2.2): it aborts
+rather than returning a corrupted result, and a caller cannot distinguish "one
+node misbehaved" from "the cluster cannot run this circuit" from the outside.
+
+Worth stating plainly: **this is the security property working.** Our callback
+refuses a result it cannot verify instead of acting on it. That is exactly the
+behaviour trade authorization depends on (THREAT_MODEL T-20, T-33), and it is now
+demonstrated against a real cluster rather than asserted. What is *not*
+demonstrated is the happy path.
+
+Most likely cause is a version skew between the locally compiled circuit
+(arcis 0.14.1) and whatever the devnet cluster nodes run. Worth raising with
+Arcium rather than guessing further.
 
 ## Where this is blocked
 

@@ -14,17 +14,17 @@
  * the suite stays runnable without that dependency — see docs/arcium-hello-world.md.
  */
 
-// @arcium-hq/client is ESM-only, which makes this file ESM. @coral-xyz/anchor
-// and @solana/web3.js are CJS, so they come in as default imports.
-import anchorPkg from "@coral-xyz/anchor";
+// Anchor 1.x ships a different TS client (@anchor-lang/core) from the 0.x line
+// (@coral-xyz/anchor). Arcium 0.14 targets Anchor 1.x and its own scaffold uses
+// @anchor-lang/core; driving an Arcium program with the 0.x client fails inside
+// the provider with "Unknown action 'undefined'". The vault tests stay on
+// @coral-xyz/anchor, which works for a plain Anchor program.
+import * as anchor from "@anchor-lang/core";
 import web3Pkg from "@solana/web3.js";
+// @anchor-lang/core does not re-export BN the way @coral-xyz/anchor did.
+import BN from "bn.js";
 
-const anchor = anchorPkg;
-const { Program, BN } = anchorPkg;
 const { PublicKey, Keypair } = web3Pkg;
-type Program = InstanceType<typeof anchorPkg.Program>;
-type Keypair = InstanceType<typeof web3Pkg.Keypair>;
-type PublicKey = InstanceType<typeof web3Pkg.PublicKey>;
 import { randomBytes } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
@@ -54,7 +54,7 @@ const SECRET_X = 32n;
 const PUBLIC_ADDEND = 10n; // baked into the circuit, not sent
 
 describe("arcium — hello world", function () {
-  this.timeout(180_000);
+  this.timeout(1_200_000);
 
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -84,10 +84,11 @@ describe("arcium — hello world", function () {
       await arciumProgram.account.mxeAccount.fetch(
         getMXEAccAddress(program.programId)
       );
-    } catch {
+    } catch (e) {
       console.log(
         "      no MXE reachable — start `arcium localnet` or deploy to devnet"
       );
+      console.log("      reason:", e instanceof Error ? e.message.slice(0, 300) : String(e));
       this.skip();
       return;
     }
@@ -177,12 +178,27 @@ describe("arcium — hello world", function () {
       getArciumProgramId()
     )[0];
 
-    // Already registered from a previous run: registering is once-per-circuit.
+    // Registering a circuit is three steps: create the account, upload the
+    // bytes, finalize. The account existing says nothing about the other two —
+    // skipping on existence alone leaves the definition unusable and queueing
+    // fails later with ComputationDefinitionNotCompleted.
     const existing = await provider.connection.getAccountInfo(compDefPDA);
-    if (existing) return "already initialized";
-
     const mxeAccount = getMXEAccAddress(program.programId);
     const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccount);
+
+    if (existing) {
+      // Account is there; make sure the upload actually finished.
+      await uploadCircuit(
+        provider,
+        "add_ten",
+        program.programId,
+        fs.readFileSync("build/add_ten.arcis"),
+        true,
+        900,
+        { skipPreflight: true, commitment: "confirmed" }
+      );
+      return "already initialized";
+    }
 
     const sig = await program.methods
       .initAddTenCompDef()
@@ -219,7 +235,7 @@ describe("arcium — hello world", function () {
 
 async function getMXEPublicKeyWithRetry(
   provider: any,
-  programId: PublicKey,
+  programId: any,
   maxRetries = 20,
   retryDelayMs = 500
 ): Promise<Uint8Array> {

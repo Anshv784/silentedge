@@ -15,7 +15,9 @@
     "@silentedge/sdk": "workspace:*",
     "@silentedge/types": "workspace:*",
     "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0"
+    "@solana/web3.js": "^1.98.0",
+    "@types/bn.js": "^5.2.0",
+    "bn.js": "^5.2.5"
   },
   "devDependencies": {
     "@types/chai": "^4.3.20",
