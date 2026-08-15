@@ -28,4 +28,56 @@ pub enum VaultError {
 
     #[msg("Encryption public key must not be all zeros")]
     InvalidEncryptionKey,
+
+    #[msg("No strategy has been stored for this vault")]
+    NoStrategyStored,
+
+    #[msg("Strategy has not been converted to MXE-encrypted state yet")]
+    StrategyNotConverted,
+
+    #[msg("The computation was aborted or could not be verified")]
+    AbortedComputation,
+
+    #[msg("Result came from a cluster this vault does not accept")]
+    UnexpectedCluster,
+
+    #[msg("No trade is currently authorized")]
+    NoTradeAuthorized,
+
+    #[msg("This trade authorization has already been used")]
+    IntentAlreadyConsumed,
+
+    #[msg("This trade authorization has expired")]
+    IntentExpired,
+
+    #[msg("Trade authorization does not match the vault's current nonce")]
+    IntentStale,
+
+    #[msg("Trade authorization was issued for a different strategy version")]
+    IntentStrategyMismatch,
+
+    #[msg("Trade exceeds the vault's maximum trade size")]
+    TradeTooLarge,
+
+    #[msg("Cooldown between trades has not elapsed")]
+    CooldownActive,
+
+    #[msg("Execution price deviates too far from the oracle")]
+    OracleDeviationTooLarge,
+
+    // --- oracle ---
+    #[msg("Oracle price is zero or negative")]
+    NonPositivePrice,
+
+    #[msg("Oracle confidence interval is too wide to trade on")]
+    ConfidenceTooWide,
+
+    #[msg("Oracle price is outside the reasonable band")]
+    PriceOutOfBand,
+
+    #[msg("Oracle exponent is outside the supported range")]
+    ExponentOutOfRange,
+
+    #[msg("Arithmetic overflow scaling the oracle price")]
+    ScalingOverflow,
 }

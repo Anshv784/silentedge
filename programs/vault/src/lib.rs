@@ -25,18 +25,26 @@ use anchor_spl::{
     associated_token::AssociatedToken,
     token::{self, Mint, Token, TokenAccount, Transfer},
 };
+use arcium_anchor::prelude::*;
+use arcium_client::idl::arcium::types::CallbackAccount;
+use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
 pub mod constants;
 pub mod errors;
+pub mod oracle;
 pub mod state;
 
 pub use constants::*;
 pub use errors::VaultError;
+pub use oracle::*;
 pub use state::*;
+
+const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy");
+const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy");
 
 declare_id!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ");
 
-#[program]
+#[arcium_program]
 pub mod vault {
     use super::*;
 
@@ -51,6 +59,7 @@ pub mod vault {
         vault_config.limits = limits;
         vault_config.status = VaultStatus::Active;
         vault_config.bump = ctx.bumps.vault_config;
+        vault_config.nonce = 0;
 
         emit!(VaultInitialized {
             vault: vault_config.key(),
@@ -170,6 +179,294 @@ pub mod vault {
         emit!(StrategySubmitted {
             vault: strategy.vault,
             version: strategy.version,
+        });
+        Ok(())
+    }
+
+    /// Create the account a verified callback will write authorizations into.
+    pub fn init_trade_intent(ctx: Context<InitTradeIntent>) -> Result<()> {
+        let intent = &mut ctx.accounts.trade_intent;
+        intent.vault = ctx.accounts.vault_config.key();
+        intent.consumed = true; // nothing authorized yet
+        intent.bump = ctx.bumps.trade_intent;
+        Ok(())
+    }
+
+    /// Consume a trade authorization.
+    ///
+    /// Callable by anyone. That is safe because the executor holds no privilege:
+    /// every parameter of the trade is already fixed in `TradeIntent`, and every
+    /// rule is checked here against on-chain state rather than against anything
+    /// the caller supplies. The executor chooses only whether and when to submit
+    /// inside the window — a liveness role, not a trust role. Users can always
+    /// self-execute, so a vanished operator cannot strand them.
+    ///
+    /// What this cannot do, by construction rather than by check: withdraw,
+    /// choose a destination, change the vault owner, change the strategy, call
+    /// an arbitrary program, or exceed the vault's own limits.
+    ///
+    /// The swap itself lands in the trading phase. Everything before it — the
+    /// authorization checks — is here, because that is the part that has to be
+    /// right before any funds move.
+    pub fn execute_trade(ctx: Context<ExecuteTrade>) -> Result<()> {
+        let clock = Clock::get()?;
+        let vault = &ctx.accounts.vault_config;
+        let intent = &ctx.accounts.trade_intent;
+
+        require!(vault.status == VaultStatus::Active, VaultError::VaultNotActive);
+
+        // Replay protection, layered on purpose. Any one of these would mostly
+        // work; together they fail safe if one is ever wrong.
+        require!(!intent.consumed, VaultError::IntentAlreadyConsumed);
+        require!(intent.amount_in > 0, VaultError::NoTradeAuthorized);
+        require!(
+            intent.vault_nonce == vault.nonce,
+            VaultError::IntentStale
+        );
+        require!(
+            intent.strategy_version == ctx.accounts.strategy_state.mxe_version,
+            VaultError::IntentStrategyMismatch
+        );
+        require!(
+            clock.slot <= intent.expires_at_slot,
+            VaultError::IntentExpired
+        );
+
+        // The vault's own cap, applied to the vault's own balance. A decision
+        // cannot authorize more than its owner allowed, whatever the circuit said.
+        let vault_value = ctx.accounts.vault_quote_ata.amount;
+        let max_trade = (vault_value as u128)
+            .checked_mul(vault.limits.max_trade_bps as u128)
+            .ok_or(VaultError::Overflow)?
+            .checked_div(BPS_DENOMINATOR as u128)
+            .ok_or(VaultError::Overflow)? as u64;
+        require!(intent.amount_in <= max_trade, VaultError::TradeTooLarge);
+
+        // A fresh oracle read at execution time, not the one the decision used.
+        // Phase 12 bounds the realised fill against this.
+        let price = read_sol_usd_price(&ctx.accounts.price_update)?;
+
+        let intent = &mut ctx.accounts.trade_intent;
+        intent.consumed = true;
+        intent.oracle_price = price;
+
+        let vault = &mut ctx.accounts.vault_config;
+        vault.nonce = vault.nonce.checked_add(1).ok_or(VaultError::Overflow)?;
+
+        emit!(TradeExecuted {
+            vault: vault.key(),
+            side: intent.side,
+            amount_in: intent.amount_in,
+            oracle_price: price,
+        });
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // Confidential evaluation
+    // ---------------------------------------------------------------
+
+    pub fn init_store_strategy_comp_def(ctx: Context<InitStoreStrategyCompDef>) -> Result<()> {
+        init_computation_def(ctx.accounts, None)?;
+        Ok(())
+    }
+
+    pub fn init_evaluate_strategy_comp_def(
+        ctx: Context<InitEvaluateStrategyCompDef>,
+    ) -> Result<()> {
+        init_computation_def(ctx.accounts, None)?;
+        Ok(())
+    }
+
+    /// Re-encrypt the submitted strategy from `Enc<Shared, _>` to `Enc<Mxe, _>`.
+    ///
+    /// Owner-signed: this reads the strategy the owner submitted and hands it to
+    /// the cluster. Evaluation afterwards needs nobody online.
+    pub fn convert_strategy(ctx: Context<ConvertStrategy>, computation_offset: u64) -> Result<()> {
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        let strategy = &ctx.accounts.strategy_state;
+        require!(strategy.version > 0, VaultError::NoStrategyStored);
+
+        let args = ArgBuilder::new()
+            .x25519_pubkey(strategy.encryption_pubkey)
+            .plaintext_u128(strategy.nonce)
+            .encrypted_u64(strategy.ciphertexts[0])
+            .encrypted_u64(strategy.ciphertexts[1])
+            .encrypted_u64(strategy.ciphertexts[2])
+            .encrypted_u64(strategy.ciphertexts[3])
+            .build();
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            vec![StoreStrategyCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[CallbackAccount {
+                    pubkey: ctx.accounts.strategy_state.key(),
+                    is_writable: true,
+                }],
+            )?],
+            1,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+
+    #[arcium_callback(encrypted_ix = "store_strategy")]
+    pub fn store_strategy_callback(
+        ctx: Context<StoreStrategyCallback>,
+        output: SignedComputationOutputs<StoreStrategyOutput>,
+    ) -> Result<()> {
+        // Cluster pinning: this is the trust boundary. See ARCHITECTURE §7.1.
+        require!(
+            ctx.accounts.cluster_account.key() == expected_cluster(),
+            VaultError::UnexpectedCluster
+        );
+
+        let o = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(StoreStrategyOutput { field_0 }) => field_0,
+            Err(_) => return Err(VaultError::AbortedComputation.into()),
+        };
+
+        let strategy = &mut ctx.accounts.strategy_state;
+        strategy.mxe_ciphertexts = o.ciphertexts;
+        strategy.mxe_nonce = o.nonce;
+        strategy.mxe_version = strategy.version;
+
+        emit!(StrategyConverted {
+            vault: strategy.vault,
+            version: strategy.mxe_version,
+        });
+        Ok(())
+    }
+
+    /// Evaluate the strategy against the live oracle price.
+    ///
+    /// Permissionless by design. Evaluation reveals nothing, authorizes nothing
+    /// on its own, and a permissionless scheduler is what stops the operator
+    /// censoring a user's bot by declining to run it.
+    ///
+    /// Both inputs the caller could once have lied about are now read on chain:
+    /// the price from Pyth, and the vault's value from its own token accounts.
+    pub fn evaluate_strategy(
+        ctx: Context<EvaluateStrategy>,
+        computation_offset: u64,
+    ) -> Result<()> {
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        require!(
+            ctx.accounts.vault_config.status == VaultStatus::Active,
+            VaultError::VaultNotActive
+        );
+
+        let strategy = &ctx.accounts.strategy_state;
+        require!(strategy.mxe_version > 0, VaultError::StrategyNotConverted);
+
+        let price = read_sol_usd_price(&ctx.accounts.price_update)?;
+
+        // Read from the vault's own account rather than trusting an argument.
+        // Quote-denominated: this is what a trade is sized against.
+        let vault_value = ctx.accounts.vault_quote_ata.amount;
+
+        let args = ArgBuilder::new()
+            .plaintext_u128(strategy.mxe_nonce)
+            .encrypted_u64(strategy.mxe_ciphertexts[0])
+            .encrypted_u64(strategy.mxe_ciphertexts[1])
+            .encrypted_u64(strategy.mxe_ciphertexts[2])
+            .encrypted_u64(strategy.mxe_ciphertexts[3])
+            .plaintext_u64(price)
+            .plaintext_u64(vault_value)
+            .build();
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            vec![EvaluateStrategyCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
+                    CallbackAccount {
+                        pubkey: ctx.accounts.trade_intent.key(),
+                        is_writable: true,
+                    },
+                    CallbackAccount {
+                        pubkey: ctx.accounts.vault_config.key(),
+                        is_writable: false,
+                    },
+                ],
+            )?],
+            1,
+            0,
+            0,
+        )?;
+        Ok(())
+    }
+
+    /// Turn a verified decision into a bounded trade authorization.
+    ///
+    /// This is the only writer of `TradeIntent`, and the only thing that can
+    /// authorize vault funds into a swap. It authorizes a side and a size inside
+    /// a slot window — never a destination, never a program, never a withdrawal.
+    #[arcium_callback(encrypted_ix = "evaluate_strategy")]
+    pub fn evaluate_strategy_callback(
+        ctx: Context<EvaluateStrategyCallback>,
+        output: SignedComputationOutputs<EvaluateStrategyOutput>,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.cluster_account.key() == expected_cluster(),
+            VaultError::UnexpectedCluster
+        );
+
+        let o = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account,
+        ) {
+            Ok(v) => v,
+            Err(_) => return Err(VaultError::AbortedComputation.into()),
+        };
+
+        let action = o.field_0.field_0;
+        let amount_in = o.field_0.field_1;
+
+        // HOLD writes nothing. A missing intent and a decision not to trade are
+        // the same state, which is the safe direction: no result means no trade.
+        if action == 0 || amount_in == 0 {
+            emit!(EvaluationHeld {
+                vault: ctx.accounts.vault_config.key(),
+            });
+            return Ok(());
+        }
+
+        let vault = &ctx.accounts.vault_config;
+        let intent = &mut ctx.accounts.trade_intent;
+        let clock = Clock::get()?;
+
+        intent.vault = vault.key();
+        intent.side = action;
+        intent.amount_in = amount_in;
+        // Filled by the executor's quote at execution time, bounded by the
+        // vault's slippage limit. Set to zero here so an executor cannot claim
+        // the callback authorized a worse floor than it did.
+        intent.min_amount_out = 0;
+        intent.expires_at_slot = clock.slot.saturating_add(INTENT_TTL_SLOTS);
+        intent.vault_nonce = vault.nonce;
+        intent.strategy_version = ctx.accounts.strategy_state.mxe_version;
+        intent.oracle_price = 0;
+        intent.consumed = false;
+
+        emit!(TradeAuthorized {
+            vault: intent.vault,
+            side: intent.side,
+            amount_in: intent.amount_in,
+            expires_at_slot: intent.expires_at_slot,
         });
         Ok(())
     }
@@ -347,6 +644,297 @@ pub struct Withdraw<'info> {
     pub vault_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+}
+
+/// The cluster account this vault accepts results from.
+///
+/// Derived from a compiled-in offset rather than from the MXE account, which is
+/// the entire point: the MXE's binding can be migrated by its authority, this
+/// cannot be changed without a program upgrade. See ARCHITECTURE.md §7.1.
+pub fn expected_cluster() -> Pubkey {
+    Pubkey::find_program_address(
+        &[CLUSTER_PDA_SEED, &EXPECTED_CLUSTER_OFFSET.to_le_bytes()],
+        &ARCIUM_PROG_ID,
+    )
+    .0
+}
+
+#[derive(Accounts)]
+pub struct InitTradeIntent<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        seeds = [VAULT_SEED, owner.key().as_ref()],
+        bump = vault_config.bump,
+        has_one = owner,
+    )]
+    pub vault_config: Account<'info, VaultConfig>,
+    /// Created ahead of time because an Arcium callback cannot create accounts —
+    /// it can only write to ones declared writable when the computation was queued.
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + TradeIntent::INIT_SPACE,
+        seeds = [INTENT_SEED, vault_config.key().as_ref()],
+        bump,
+    )]
+    pub trade_intent: Account<'info, TradeIntent>,
+    pub system_program: Program<'info, System>,
+}
+
+#[queue_computation_accounts("store_strategy", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct ConvertStrategy<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(
+        seeds = [VAULT_SEED, payer.key().as_ref()],
+        bump = vault_config.bump,
+    )]
+    pub vault_config: Account<'info, VaultConfig>,
+    #[account(
+        mut,
+        seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
+        bump = strategy_state.bump,
+    )]
+    pub strategy_state: Account<'info, StrategyState>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_STRATEGY))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Account<'info, FeePool>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Account<'info, ClockAccount>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[callback_accounts("store_strategy")]
+#[derive(Accounts)]
+pub struct StoreStrategyCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_STRATEGY))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: address is validated by the Arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint
+    pub instructions_sysvar: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub strategy_state: Account<'info, StrategyState>,
+}
+
+#[queue_computation_accounts("evaluate_strategy", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct EvaluateStrategy<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// Not seeded by `payer`: anyone may evaluate. Nothing is revealed and
+    /// nothing is authorized by evaluating, and permissionless scheduling is
+    /// what stops the operator censoring a user's bot.
+    #[account(
+        seeds = [VAULT_SEED, vault_config.owner.as_ref()],
+        bump = vault_config.bump,
+    )]
+    pub vault_config: Box<Account<'info, VaultConfig>>,
+    #[account(
+        seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
+        bump = strategy_state.bump,
+    )]
+    pub strategy_state: Box<Account<'info, StrategyState>>,
+    #[account(
+        mut,
+        seeds = [INTENT_SEED, vault_config.key().as_ref()],
+        bump = trade_intent.bump,
+    )]
+    pub trade_intent: Box<Account<'info, TradeIntent>>,
+    /// The vault's own quote balance. Read here rather than passed in, so a
+    /// caller cannot inflate the size of someone else's trade.
+    #[account(
+        associated_token::mint = vault_config.quote_mint,
+        associated_token::authority = vault_config,
+    )]
+    pub vault_quote_ata: Box<Account<'info, TokenAccount>>,
+    pub price_update: Box<Account<'info, PriceUpdateV2>>,
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account))]
+    /// CHECK: mempool_account, checked by the arcium program.
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account))]
+    /// CHECK: executing_pool, checked by the arcium program.
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account))]
+    /// CHECK: computation_account, checked by the arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EVALUATE_STRATEGY))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Account<'info, FeePool>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Account<'info, ClockAccount>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[callback_accounts("evaluate_strategy")]
+#[derive(Accounts)]
+pub struct EvaluateStrategyCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EVALUATE_STRATEGY))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: address is validated by the Arcium program.
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
+    /// CHECK: instructions_sysvar, checked by the account constraint
+    pub instructions_sysvar: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub trade_intent: Account<'info, TradeIntent>,
+    pub vault_config: Account<'info, VaultConfig>,
+    #[account(
+        seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
+        bump = strategy_state.bump,
+    )]
+    pub strategy_state: Account<'info, StrategyState>,
+}
+
+#[init_computation_definition_accounts("store_strategy", payer)]
+#[derive(Accounts)]
+pub struct InitStoreStrategyCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by arcium program.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
+#[init_computation_definition_accounts("evaluate_strategy", payer)]
+#[derive(Accounts)]
+pub struct InitEvaluateStrategyCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account, checked by arcium program.
+    pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_mxe_lut_pda!(mxe_account.lut_offset_slot))]
+    /// CHECK: address_lookup_table, checked by arcium program.
+    pub address_lookup_table: UncheckedAccount<'info>,
+    #[account(address = LUT_PROGRAM_ID)]
+    /// CHECK: lut_program is the Address Lookup Table program.
+    pub lut_program: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteTrade<'info> {
+    /// Permissionless. Holds no privilege; pays the fee and picks the moment.
+    pub executor: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, vault_config.owner.as_ref()],
+        bump = vault_config.bump,
+    )]
+    pub vault_config: Box<Account<'info, VaultConfig>>,
+    #[account(
+        mut,
+        seeds = [INTENT_SEED, vault_config.key().as_ref()],
+        bump = trade_intent.bump,
+        constraint = trade_intent.vault == vault_config.key() @ VaultError::NoTradeAuthorized,
+    )]
+    pub trade_intent: Box<Account<'info, TradeIntent>>,
+    #[account(
+        seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
+        bump = strategy_state.bump,
+    )]
+    pub strategy_state: Box<Account<'info, StrategyState>>,
+    #[account(
+        associated_token::mint = vault_config.quote_mint,
+        associated_token::authority = vault_config,
+    )]
+    pub vault_quote_ata: Box<Account<'info, TokenAccount>>,
+    pub price_update: Box<Account<'info, PriceUpdateV2>>,
+}
+
+#[event]
+pub struct TradeExecuted {
+    pub vault: Pubkey,
+    pub side: u8,
+    pub amount_in: u64,
+    pub oracle_price: u64,
+}
+
+#[event]
+pub struct StrategyConverted {
+    pub vault: Pubkey,
+    pub version: u32,
+}
+
+#[event]
+pub struct EvaluationHeld {
+    pub vault: Pubkey,
+}
+
+#[event]
+pub struct TradeAuthorized {
+    pub vault: Pubkey,
+    pub side: u8,
+    pub amount_in: u64,
+    pub expires_at_slot: u64,
 }
 
 #[derive(Accounts)]

@@ -80,6 +80,9 @@ pub struct VaultConfig {
     pub limits: RiskLimits,
     pub status: VaultStatus,
     pub bump: u8,
+    /// Monotonic. Bumped on every executed trade, so an old authorization can
+    /// never be replayed against a vault that has moved on.
+    pub nonce: u64,
 }
 
 impl VaultConfig {
@@ -110,5 +113,49 @@ pub struct StrategyState {
     /// Bumped on every submission. Binds trade authorizations to the strategy
     /// that produced them, so replacing a strategy invalidates work in flight.
     pub version: u32,
+    pub bump: u8,
+
+    /// The same strategy re-encrypted to the MXE cluster.
+    ///
+    /// `ciphertexts` above is what the user submitted, readable by them. This is
+    /// what the cluster produced from it, readable only by the cluster acting
+    /// together — which is what lets evaluation run with nobody online.
+    /// Zero `mxe_version` means the conversion has not happened yet.
+    pub mxe_ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
+    pub mxe_nonce: u128,
+    pub mxe_version: u32,
+}
+
+/// A single authorized trade, written only by a verified Arcium callback.
+///
+/// This is the whole authorization surface for moving vault funds into a swap.
+/// It is deliberately a singleton per vault: a new decision overwrites any
+/// unconsumed one, so there is no queue to stuff and no ordering to reason about.
+///
+/// Every field here is a constraint the executor must satisfy, not a hint. The
+/// executor is permissionless precisely because it holds no privilege — it
+/// chooses only whether and when to submit, inside a window this account defines.
+#[account]
+#[derive(InitSpace, Debug)]
+pub struct TradeIntent {
+    pub vault: Pubkey,
+    /// 1 = BUY (quote -> base), 2 = SELL (base -> quote). 0 never lands here.
+    pub side: u8,
+    /// Input amount in the source mint's base units.
+    pub amount_in: u64,
+    /// Floor on the output. The executor cannot fill worse than this.
+    pub min_amount_out: u64,
+    /// Slot after which this authorization is dead.
+    pub expires_at_slot: u64,
+    /// Must equal `VaultConfig.nonce`. Bumped on execution, which is what makes
+    /// a consumed intent unreplayable even if `consumed` were somehow cleared.
+    pub vault_nonce: u64,
+    /// Binds the authorization to the strategy that produced it. Replacing the
+    /// strategy invalidates any intent still in flight.
+    pub strategy_version: u32,
+    /// The oracle price the decision was made at, for the execution-time
+    /// deviation check.
+    pub oracle_price: u64,
+    pub consumed: bool,
     pub bump: u8,
 }

@@ -10,6 +10,34 @@ pub const STRATEGY_SEED: &[u8] = b"strategy";
 /// Fixed because Arcis circuits are fixed-shape (RESEARCH.md §2.7).
 pub const STRATEGY_FIELDS: usize = 4;
 
+/// Seed prefix for a vault's pending trade authorization.
+pub const INTENT_SEED: &[u8] = b"intent";
+
+/// How long a trade authorization stays executable, in slots (~72 s at 400 ms).
+///
+/// Deliberately short. The intent is public between the callback writing it and
+/// an executor consuming it, so the window is also the window in which someone
+/// can position against it (THREAT_MODEL T-27, T-28). Long enough to land a
+/// transaction, short enough that a stale decision cannot be executed against a
+/// market that has moved.
+pub const INTENT_TTL_SLOTS: u64 = 180;
+
+/// The Arcium cluster this vault will accept results from.
+///
+/// **Custody-critical.** Arcium's generated constraint derives the cluster
+/// account from the MXE account, so it silently follows a `migrate-cluster`.
+/// `verify_output` then validates the BLS signature against *whatever cluster is
+/// passed*, which would let an operator who migrated the MXE to a cluster they
+/// control mint attestations this program accepts as genuine MPC results — that
+/// is, forge trade authorizations.
+///
+/// Pinning it to a constant closes that. Changing it requires a program upgrade,
+/// which a timelocked upgrade authority makes public and delayed.
+/// See ARCHITECTURE.md §7.1 and THREAT_MODEL.md T-37.
+pub const EXPECTED_CLUSTER_OFFSET: u32 = 456; // devnet
+#[cfg(feature = "mainnet")]
+pub const EXPECTED_CLUSTER_OFFSET_MAINNET: u32 = 2026;
+
 /// Wrapped SOL. Same address on every cluster.
 pub const BASE_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
