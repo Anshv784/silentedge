@@ -341,8 +341,30 @@ Two waits, not one. The buffers close after the definition's own TTL, but
 `close-computation-definition` additionally fails with
 `ComputationDefinitionHasActiveComputations` (6308) until every computation
 queued against it has finalized or expired — each of those has its own 180-slot
-life. Closing reclaims the rent, which matters when the wallet is nearly empty
-from the failed attempts.
+life. Closing reclaims rent, which matters when the wallet is nearly empty from
+the failed attempts.
+
+**The second wait may not end.** On devnet this step failed 24 consecutive times
+across ~12 minutes, long after the definition's own TTL was satisfied
+(6,213 slots since deactivation, against a 180-slot requirement). Decoding the
+cluster's executing pool shows why: it is **shared across every MXE on the
+cluster** and holds entries queued millions of slots ago. Clearing them is not
+something an integrator can do from the outside.
+
+So the documented teardown path is not reliably available on a shared cluster.
+Two ways around it:
+
+- **Rename the circuit.** The comp-def offset derives from the instruction name,
+  so `add_ten` → `add_ten_v2` yields a fresh definition and skips the teardown
+  entirely. Requires redeploying the program.
+- **Use a local cluster**, where the pool is yours and disposable.
+
+Which points at a deployment rule worth following: **do not pass `--max-len` on
+a program you may need to redeploy.** Sizing the data account to the exact
+binary halves the initial cost and then blocks every upgrade — the rebuilt
+binary here came out 32 bytes larger (466,744 vs 466,712) and could not be
+upgraded in place, which is precisely what made the rename unavailable as a
+recovery route.
 
 ## Where this is blocked
 
