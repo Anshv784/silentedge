@@ -20,7 +20,7 @@ use arcium_anchor::prelude::*;
 
 const COMP_DEF_OFFSET_ADD_TEN: u32 = comp_def_offset("add_ten");
 
-declare_id!("HVEKKMWwjLaQyXqkMGGshNGXa3Wm1PCSUnRaB6vAnB99");
+declare_id!("FPZkMe1NgT3oug3iLoaWsnPjGAEr3p7mwporhfVqU7Lk");
 
 #[arcium_program]
 pub mod hello_arcium {

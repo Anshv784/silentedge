@@ -8,10 +8,12 @@ visible to the platform operator or to any single node running the computation.
 
 > **Status: in progress.** Vault program (custody, deposits, withdrawals,
 > pause/stop), the web dashboard, the strategy builder, and client-side
-> strategy encryption are built and tested against a devnet fork. No MXE is
-> deployed yet, so strategies are encrypted to a development key rather than a
-> live MPC cluster — the interface says so. Confidential execution and trading
-> are not built yet. Nothing here is audited. Do not use with real funds.
+> strategy encryption are built and tested against a devnet fork. A real Arcium
+> computation runs end to end on the devnet cluster
+> ([`docs/arcium-hello-world.md`](docs/arcium-hello-world.md)), but the vault's
+> own strategy evaluation is not wired to it yet, so the app still encrypts to a
+> development key and says so. Trading is not built. Nothing here is audited.
+> Do not use with real funds.
 
 ---
 

@@ -105,14 +105,26 @@ Mapped to THREAT_MODEL.md §9. 58 tests, plus one that skips without a cluster.
 | Encryption | round trip, derived-key recovery, nonce freshness, no plaintext in ciphertext, wrong-key failure |
 | Strategy on chain | storage, version bump, zero-key rejection, stranger rejected, **no plaintext in transaction, account, or logs** |
 
-| Arcium | `x + 10` end to end — **skips** unless a cluster is reachable, see [arcium-hello-world.md](arcium-hello-world.md) |
+| Arcium | `x + 10` end to end on the devnet cluster — **passes**; skips only when no cluster is reachable. See [arcium-hello-world.md](arcium-hello-world.md) |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
 pinning, oracle guards, swap execution. Those arrive with their phases.
 
 A skipped test is not a passing one. `tests/hello-arcium.ts` skips when no MXE
 answers, rather than mocking a cluster and reporting green — the whole point of
-that test is that the computation happens somewhere we do not control.
+that test is that the computation happens somewhere we do not control. Against
+Arcium devnet it passes in ~11.6 s:
+
+```bash
+ANCHOR_PROVIDER_URL=<devnet-rpc> \
+ANCHOR_WALLET=~/.config/solana/<your-key>.json \
+ARCIUM_CLUSTER_OFFSET=456 \
+npx ts-mocha -p ./tsconfig.json -t 1200000 'tests/hello-arcium.ts'
+```
+
+Use an RPC with a real rate limit. The circuit upload is ~70 chunked
+transactions and public endpoints throttle it into a corrupt partial upload —
+which is exactly the failure documented in arcium-hello-world.md.
 
 ## A dependency footgun worth knowing about
 
