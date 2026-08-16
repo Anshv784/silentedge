@@ -15,6 +15,7 @@
 import { expect } from "chai";
 import { x25519 } from "@arcium-hq/client";
 import {
+  STRATEGY_FIELD_ORDER,
   encryptStrategy,
   decryptStrategy,
   decryptStrategyWithMxeKey,
@@ -110,6 +111,22 @@ describe("encryptStrategy", () => {
     // The MXE side still works from the other direction.
     expect(decryptStrategyWithMxeKey(e, mxe.privateKey))
       .to.deep.equal(encryptedPartOf(normalized));
+  });
+
+  /**
+   * `size_bps` is public vault config. If it ever re-entered the ciphertext the
+   * UI would start implying a protection that a single trade destroys, and the
+   * circuit would be paying MPC gates to hide a published number.
+   */
+  it("keeps the public trade size out of the encrypted payload", () => {
+    const mxe = fakeMxeKeypair();
+    const normalized = normalize(secretDraft(), MAX_SIZE_BPS);
+    const e = encryptStrategy(normalized, mxe.publicKey);
+
+    expect(e.ciphertexts, "three secrets, not four").to.have.length(3);
+    expect(STRATEGY_FIELD_ORDER).to.not.include("sizeBps");
+    expect(Object.keys(decryptStrategyWithMxeKey(e, mxe.privateKey)))
+      .to.not.include("sizeBps");
   });
 
   it("derives the same key from the same signature", async () => {

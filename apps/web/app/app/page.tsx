@@ -666,6 +666,59 @@ export default function Page() {
               </Panel>
             ) : null}
 
+            <Panel title="What is visible" index="07" note="Being precise about this is the product.">
+              <dl className="space-y-2.5 text-[12px] leading-relaxed">
+                <div>
+                  <dt className="font-medium">Public, on chain</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Your vault, its balances, every risk limit including the
+                    trade size, every authorization, and every trade. Anyone can
+                    read all of it.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Encrypted</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Your three price thresholds, and nothing else. No single
+                    party can read them — not us, not any one node.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-[var(--color-exposed)]">
+                    Leaks over time
+                  </dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Every trade is a public clue about the threshold behind it.
+                    Enough trades narrow your rules to a tight range. They are
+                    unread, not unknowable.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Never leaves this tab</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    The draft before you save it, and the key it is encrypted
+                    with. Not stored, not logged, not sent.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Told to the router</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Executing asks Jupiter for a route, which discloses the
+                    pending trade to Jupiter before it is submitted. Inherent to
+                    using a router, and not covered by the encryption.
+                  </dd>
+                </div>
+              </dl>
+              <a
+                className="mt-3 inline-block text-[11px] underline underline-offset-2"
+                href="https://github.com/Anshv784/silentedge/blob/main/docs/visibility.md"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                The full classification
+              </a>
+            </Panel>
+
             <Receipts items={receipts} />
 
             {/* --- The shielded layer ---------------------------------- */}
