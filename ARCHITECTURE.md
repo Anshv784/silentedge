@@ -79,8 +79,7 @@ VaultConfig  PDA  seeds = ["vault", owner]
   limits: RiskLimits
   status: Active | Paused | Stopped
   nonce: u64                    // monotonic; replay protection
-  day_epoch: i64, day_start_value: u64, realized_loss_today: u64
-  last_trade_ts: i64            // cooldown
+  last_trade_ts: i64            // cooldown; 0 until the first trade
   bump: u8
 
 StrategyState  PDA  seeds = ["strategy", vault]
@@ -101,11 +100,11 @@ TradeIntent  PDA  seeds = ["intent", vault]     // singleton per vault
 RiskLimits
   max_trade_bps            // e.g. 1000 = 10% of vault per trade
   max_slippage_bps         // e.g. 50 = 0.5%
-  daily_loss_limit_bps     // e.g. 500 = 5%
-  cooldown_seconds
-  max_oracle_staleness_sec
-  max_conf_bps             // reject if Pyth conf/price exceeds this
-  max_oracle_deviation_bps // execution vs Pyth band
+  daily_loss_limit_bps     // STORED, NOT ENFORCED — see state.rs
+  cooldown_seconds         // entries only; exits are never throttled
+  max_oracle_staleness_sec // ceiling == what oracle.rs enforces (30s)
+  max_conf_bps             // ceiling == what oracle.rs enforces (100bps)
+  max_oracle_deviation_bps // STORED, NOT ENFORCED — min_out does this job
 ```
 
 `TradeIntent` is a singleton per vault. A new intent overwrites any unconsumed one. This
@@ -134,7 +133,9 @@ Enforced invariants:
   vault, both PDA-owned. Post-swap balance assertions confirm this.
 - No instruction transfers to any operator-controlled address. This is a property of the
   instruction set, not of a runtime check.
-- `pause` may be called by owner **or** by a guardian (circuit breaker). `withdraw`
+- `pause` is **owner-only**. A `GUARDIAN` constant existed and resolved to the program's
+  own id, which is the deploy keypair's public key — so it handed the deployer the power to
+  pause any user's vault. Removed rather than repointed; see constants.rs. `withdraw`
   remains available while paused — pausing must never trap user funds.
 
 ---
@@ -251,9 +252,11 @@ This replaces the brief's `MXESigningKey` flow.
    │  3. intent.vault_nonce == vault.nonce    │
    │  4. intent.strategy_version current      │
    │  5. current_slot <= expires_at_slot      │
-   │  6. amount_in <= max_trade_bps of vault  │
-   │  7. cooldown elapsed                     │
-   │  8. daily loss limit not breached        │
+   │  6. entry: amount_in <= max_trade_bps    │
+   │  7. entry: cooldown elapsed              │
+   │     (exits skip 6 and 7 — a full-position│
+   │      stop must never be capped or delayed│
+   │  8. amount_in <= source ATA balance      │
    │  9. Pyth fresh + confidence within band  │
    │ 10. swap program ∈ allowlist {Jupiter}   │
    │ 11. mints ∈ allowlist {USDC, SOL}        │
@@ -374,7 +377,7 @@ confidentiality fails.
 |-----------|-------------|---------------------------|
 | Vault program upgrade | Deployer keypair | **Squads multisig + timelock** |
 | MXE authority | Deployer keypair | Squads multisig **if Arcium supports it** — unverified, see Q-A |
-| Guardian (pause only) | Deployer keypair | Separate multisig; can pause, never withdraw |
+| Guardian (pause only) | **Removed** — the constant was the deploy keypair | Re-add only as a multisig that is demonstrably not the deployer |
 
 Sequencing matters: fresh MXE init **requires the program's upgrade authority to sign**, and an
 immutable program "can never initialize a fresh MXE." So the order is: deploy → init MXE →
@@ -410,8 +413,8 @@ would want to delegate:
 
 - the Arcium **BLS callback** writes `TradeIntent` — an L1 transaction, so a delegated
   `TradeIntent` would make the callback fail;
-- `execute_trade` writes `consumed`, `vault.nonce`, cooldown and daily-loss counters while
-  CPI-ing Jupiter.
+- `execute_trade` writes `consumed`, `vault.nonce` and `last_trade_ts` while CPI-ing
+  Jupiter.
 
 **Delegation and Arcium-attested authorization are mutually exclusive over the same accounts.**
 Every account on the critical path must therefore stay undelegated, which leaves no ER-resident
@@ -505,9 +508,10 @@ with honest claims. Not a scaling story.
 - Strategy: `entry_below`, `exit_above`, `stop_below`, `size_bps` — visual builder only
 - `Enc<Mxe, Strategy>` persistent encrypted state
 - **Cluster pinning (§7.1)** on both Arcium instructions — custody-critical
-- Pyth trigger + on-chain freshness/confidence/deviation guards
+- Pyth trigger + on-chain freshness/confidence guards, and an oracle-derived `min_out`
 - Jupiter Router `/build` CPI with `maxAccounts` capping
-- Full risk controls: trade cap, daily loss limit, slippage, cooldown, circuit breaker
+- Risk controls: trade cap and cooldown on entries, slippage floor on both sides,
+  owner-only pause/stop. **Not** a daily loss limit — see THREAT_MODEL T-31.
 - Permissionless executor + a "self-execute" button in the UI
 - Devnet end-to-end, plus Surfpool mainnet-fork tests for the swap/oracle path
 - SECURITY.md with the exact claims from §9

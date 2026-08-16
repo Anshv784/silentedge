@@ -64,12 +64,47 @@ pub mod vault {
         vault_config.status = VaultStatus::Active;
         vault_config.bump = ctx.bumps.vault_config;
         vault_config.nonce = 0;
+        vault_config.last_trade_ts = 0;
+        vault_config.reserved = [0u8; 64];
 
         emit!(VaultInitialized {
             vault: vault_config.key(),
             owner: vault_config.owner,
             base_mint: vault_config.base_mint,
             quote_mint: vault_config.quote_mint,
+        });
+        Ok(())
+    }
+
+    /// Replace the vault's risk envelope. Owner only.
+    ///
+    /// Limits were write-once, and the vault PDA is one-per-owner with no close
+    /// instruction — so a cooldown or trade cap set badly at creation was
+    /// permanent for that vault, with no way out but abandoning it. That is only
+    /// tolerable while the limits are inert; it stops being tolerable the moment
+    /// they are enforced.
+    ///
+    /// Bumps `nonce`, which invalidates any authorization already in flight. An
+    /// intent carries no copy of the envelope it was issued under, so without
+    /// the bump a decision made under the old limits would execute under the new
+    /// ones. There is no timelock and no tighten-only ratchet on purpose: both
+    /// would guard a strictly weaker path than `withdraw`, which sends 100% to
+    /// the owner with no delay and no cap. A stolen owner key does not need this
+    /// instruction.
+    pub fn update_limits(ctx: Context<UpdateLimits>, limits: RiskLimits) -> Result<()> {
+        limits.validate()?;
+        require!(
+            ctx.accounts.vault_config.status != VaultStatus::Stopped,
+            VaultError::VaultStopped
+        );
+
+        let vault = &mut ctx.accounts.vault_config;
+        vault.limits = limits;
+        vault.nonce = vault.nonce.checked_add(1).ok_or(VaultError::Overflow)?;
+
+        emit!(LimitsUpdated {
+            vault: vault.key(),
+            nonce: vault.nonce,
         });
         Ok(())
     }
@@ -243,6 +278,7 @@ pub mod vault {
         let amount_in = intent.amount_in;
         let max_slippage_bps = vault.limits.max_slippage_bps;
         let max_trade_bps = vault.limits.max_trade_bps;
+        let cooldown_seconds = vault.limits.cooldown_seconds;
 
         // Which ATA funds the swap depends on the direction. Getting this
         // backwards would size a sell against the wrong balance.
@@ -262,15 +298,36 @@ pub mod vault {
             VaultError::InsufficientSourceBalance
         );
 
-        // The vault's own cap, applied to the balance actually being spent. A
-        // decision cannot authorize more than its owner allowed, whatever the
-        // circuit said.
-        let max_trade = (src_before as u128)
-            .checked_mul(max_trade_bps as u128)
-            .ok_or(VaultError::Overflow)?
-            .checked_div(BPS_DENOMINATOR as u128)
-            .ok_or(VaultError::Overflow)? as u64;
-        require!(amount_in <= max_trade, VaultError::TradeTooLarge);
+        // The vault's own cap, applied to the balance actually being spent — on
+        // entries only.
+        //
+        // A stop exits the whole position, so `amount_in == src_before`, while
+        // the cap can never exceed 50% (MAX_TRADE_BPS_CEILING). Applying it to
+        // sells therefore rejected *every* stop-loss with TradeTooLarge: the
+        // vault's only downside control could not fire. The cap exists to bound
+        // how much a single decision can put at risk, and a sell reduces risk —
+        // its value is already bounded by the oracle-derived `min_out` below.
+        // So exits are uncapped and entries are not.
+        if side == SIDE_BUY {
+            let max_trade = (src_before as u128)
+                .checked_mul(max_trade_bps as u128)
+                .ok_or(VaultError::Overflow)?
+                .checked_div(BPS_DENOMINATOR as u128)
+                .ok_or(VaultError::Overflow)? as u64;
+            require!(amount_in <= max_trade, VaultError::TradeTooLarge);
+
+            // Same reasoning for the cooldown: it throttles entries, never the
+            // way out. Gating sells would let anyone burn the window on a benign
+            // trade and lock out a de-risking exit, since execute_trade is
+            // permissionless.
+            let elapsed = clock
+                .unix_timestamp
+                .saturating_sub(ctx.accounts.vault_config.last_trade_ts);
+            require!(
+                elapsed >= cooldown_seconds as i64,
+                VaultError::CooldownActive
+            );
+        }
 
         // A fresh oracle read at execution time, not the one the decision used,
         // and the floor the swap must clear.
@@ -353,6 +410,7 @@ pub mod vault {
 
         let vault = &mut ctx.accounts.vault_config;
         vault.nonce = vault.nonce.checked_add(1).ok_or(VaultError::Overflow)?;
+        vault.last_trade_ts = clock.unix_timestamp;
 
         emit!(TradeExecuted {
             vault: vault.key(),
@@ -585,16 +643,19 @@ pub mod vault {
         Ok(())
     }
 
-    /// Circuit breaker. Callable by the owner or the guardian.
+    /// Circuit breaker. Owner only.
     ///
-    /// The guardian exists so an anomaly can be stopped quickly. It is powerless
-    /// beyond this: it cannot resume, cannot stop, and cannot withdraw.
+    /// There was a `GUARDIAN` branch here. It resolved to this program's own id,
+    /// which is the public key of the deploy keypair — so it granted the
+    /// deployer the power to pause any user's vault. See constants.rs for why it
+    /// is gone rather than repointed. Pausing stops new trades and never blocks
+    /// `withdraw`.
     pub fn pause(ctx: Context<SetStatus>) -> Result<()> {
         let authority = ctx.accounts.authority.key();
         let vault_config = &mut ctx.accounts.vault_config;
 
         require!(
-            authority == vault_config.owner || authority == GUARDIAN,
+            authority == vault_config.owner,
             VaultError::NotPauseAuthority
         );
         require!(
@@ -611,8 +672,7 @@ pub mod vault {
         Ok(())
     }
 
-    /// Return a paused vault to service. Owner only — the guardian may stop the
-    /// bleeding but may not decide the owner is ready to trade again.
+    /// Return a paused vault to service. Owner only.
     pub fn resume(ctx: Context<SetStatus>) -> Result<()> {
         let authority = ctx.accounts.authority.key();
         let vault_config = &mut ctx.accounts.vault_config;
@@ -688,6 +748,21 @@ pub struct InitializeVault<'info> {
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateLimits<'info> {
+    pub owner: Signer<'info>,
+
+    /// Seeded by `owner` and `has_one` checked, so a signer can only ever reach
+    /// their own vault's limits.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, owner.key().as_ref()],
+        bump = vault_config.bump,
+        has_one = owner,
+    )]
+    pub vault_config: Account<'info, VaultConfig>,
 }
 
 #[derive(Accounts)]
@@ -1106,8 +1181,10 @@ pub struct SubmitStrategy<'info> {
 pub struct SetStatus<'info> {
     pub authority: Signer<'info>,
 
-    /// Not seeded by `authority`: the guardian must be able to pause a vault it
-    /// does not own. Authorization is checked explicitly in each handler.
+    /// Seeded by `vault_config.owner` rather than by `authority`, a shape left
+    /// over from the removed guardian. Every handler now checks
+    /// `authority == vault_config.owner` explicitly, so this is equivalent to
+    /// seeding by the signer — but the explicit check is what enforces it.
     #[account(
         mut,
         seeds = [VAULT_SEED, vault_config.owner.as_ref()],
@@ -1149,4 +1226,12 @@ pub struct StatusChanged {
     pub vault: Pubkey,
     pub status: VaultStatus,
     pub authority: Pubkey,
+}
+
+#[event]
+pub struct LimitsUpdated {
+    pub vault: Pubkey,
+    /// The bumped nonce, which is also the receipt that any in-flight
+    /// authorization was invalidated.
+    pub nonce: u64,
 }

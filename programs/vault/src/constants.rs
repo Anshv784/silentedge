@@ -34,9 +34,15 @@ pub const INTENT_TTL_SLOTS: u64 = 180;
 /// Pinning it to a constant closes that. Changing it requires a program upgrade,
 /// which a timelocked upgrade authority makes public and delayed.
 /// See ARCHITECTURE.md §7.1 and THREAT_MODEL.md T-37.
-pub const EXPECTED_CLUSTER_OFFSET: u32 = 456; // devnet
+///
+/// This constant carried no `#[cfg]` until now, and a second
+/// `EXPECTED_CLUSTER_OFFSET_MAINNET` sat beside it that nothing ever read. A
+/// `--features mainnet` build therefore pinned the *devnet* cluster — the one
+/// failure this constant exists to prevent, on the build where it matters.
+#[cfg(not(feature = "mainnet"))]
+pub const EXPECTED_CLUSTER_OFFSET: u32 = 456;
 #[cfg(feature = "mainnet")]
-pub const EXPECTED_CLUSTER_OFFSET_MAINNET: u32 = 2026;
+pub const EXPECTED_CLUSTER_OFFSET: u32 = 2026;
 
 /// Wrapped SOL. Same address on every cluster.
 pub const BASE_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
@@ -54,15 +60,22 @@ pub const QUOTE_MINT: Pubkey = pubkey!("36X5x8D8jc15XD971iSC9cAB5puaA7zXc6dggA96
 #[cfg(feature = "mainnet")]
 pub const QUOTE_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 
-/// May pause a vault as a circuit breaker, and nothing else.
-///
-/// Deliberately powerless beyond pausing: it cannot withdraw, cannot resume
-/// (only the owner can), and pausing never blocks the owner's withdrawal.
-/// See THREAT_MODEL.md T-4.
-#[cfg(not(feature = "mainnet"))]
-pub const GUARDIAN: Pubkey = pubkey!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ");
-#[cfg(feature = "mainnet")]
-pub const GUARDIAN: Pubkey = pubkey!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ");
+// GUARDIAN — REMOVED, deliberately.
+//
+// It was a placeholder set to this program's own id, which is also the public
+// key of `target/deploy/vault-keypair.json`. That file is the deploy keypair,
+// so the "guardian" was not an inert placeholder: whoever holds it could pause
+// any user's vault in this program, indefinitely, without the owner's consent.
+//
+// The damage was bounded — `withdraw` ignores status entirely (see lib.rs) and
+// only the owner can resume — so it was griefing rather than theft. But a
+// system whose central claim is that the operator holds no unilateral lever
+// cannot ship an accidental one, and a guardian nobody holds a *separate* key
+// for protects nothing anyway.
+//
+// Pausing is owner-only until a real guardian key exists — a multisig that is
+// demonstrably not the deployer. Re-adding it means adding a constant here AND
+// restoring the branch in `pause`, so neither happens by accident.
 
 /// Jupiter aggregator — the only program `execute_trade` will ever CPI into.
 ///
@@ -91,6 +104,21 @@ pub const BPS_DENOMINATOR: u16 = 10_000;
 // that arrive with `execute_trade`.
 pub const MAX_TRADE_BPS_CEILING: u16 = 5_000; // never more than 50% of the vault per trade
 pub const MAX_SLIPPAGE_BPS_CEILING: u16 = 500; // 5%
-pub const MAX_ORACLE_STALENESS_CEILING: u32 = 120; // seconds
-pub const MAX_CONF_BPS_CEILING: u16 = 500; // reject prices with >5% confidence/price
+/// Ceilings on the *oracle* limits, tightened to exactly what `oracle.rs`
+/// enforces.
+///
+/// They were 120s and 500bps while `read_sol_usd_price` enforced 30s and
+/// 100bps from its own constants, so a vault could be configured 4x staler and
+/// 5x wider than anything the code would ever accept. Setting the ceilings to
+/// the enforced values makes the per-vault fields honest: they can only ever be
+/// stricter than the floor the program already applies.
+pub const MAX_ORACLE_STALENESS_CEILING: u32 = 30; // seconds; == oracle::MAX_PRICE_AGE_SECONDS
+pub const MAX_CONF_BPS_CEILING: u16 = 100; // == oracle::MAX_CONF_BPS
+
+/// Upper bound on the cooldown. `validate()` never bounded this field at all.
+///
+/// Deliberately short. A cooldown only delays *entries* (sells are exempt), but
+/// a long one still means paying for MPC evaluations that mint intents nothing
+/// can execute, since an intent lives ~72 seconds.
+pub const MAX_COOLDOWN_SECONDS: u32 = 3_600;
 pub const MAX_ORACLE_DEVIATION_CEILING: u16 = 1_000; // 10%

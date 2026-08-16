@@ -27,7 +27,12 @@ import {
   Keypair, PublicKey, SystemProgram, TransactionInstruction, AccountMeta,
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { expect } from "chai";
+import { expect, config as chaiConfig } from "chai";
+
+// Show the whole program error; the default 40-char truncation hides the
+// AnchorError name, which is the only part that distinguishes a real failure
+// from a test-sequencing one.
+chaiConfig.truncateThreshold = 0;
 
 import { Vault } from "../target/types/vault";
 
@@ -42,6 +47,7 @@ const INTENT_SEED = Buffer.from("intent");
 const STRATEGY_SEED = Buffer.from("strategy");
 
 const SIDE_BUY = 1;
+const SIDE_SELL = 2;
 const DEPOSIT = 5_000_000_000n; // 5,000 USDC
 const TRADE_IN = 500_000_000n; //   500 USDC, 10% — at the vault's cap
 
@@ -140,6 +146,24 @@ describe("vault — swap execution against forked mainnet", function () {
     await setToken(vault, USDC, DEPOSIT);
     await setToken(vault, WSOL, 0n); // destination must exist to receive
     await refreshOracle();
+
+    // The fork outlives a single run, so the vault carries whatever the last
+    // run left behind. A run that died mid-cooldown-test would otherwise leave
+    // a 3600s cooldown set and every later run would fail on that instead of
+    // its own assertion. Normalise rather than assume a clean vault.
+    await setCooldown(0);
+  });
+
+  // Each test starts from a known cooldown. Without this a failure inside the
+  // cooldown test leaks a 3600s setting into every test after it, which then
+  // fails on CooldownActive instead of its own assertion.
+  beforeEach(async function () {
+    if (!(await connection.getAccountInfo(vault))) return; // suite skipped
+    // Only when it differs. Two identical setCooldown(0) transactions in a row
+    // serialize to the same bytes and the second is rejected as already
+    // processed — a duplicate-signature failure that looks like a program bug.
+    const v = await program.account.vaultConfig.fetch(vault);
+    if (v.limits.cooldownSeconds !== 0) await setCooldown(0);
   });
 
   /**
@@ -211,10 +235,11 @@ describe("vault — swap execution against forked mainnet", function () {
   }
 
   /** A live Jupiter route, constrained so the CPI fits without ALTs. */
-  async function route(amountIn: bigint) {
+  async function route(amountIn: bigint, side: number = SIDE_BUY) {
+    const [inMint, outMint] = side === SIDE_BUY ? [USDC, WSOL] : [WSOL, USDC];
     const url =
-      `https://api.jup.ag/swap/v2/build?inputMint=${USDC.toBase58()}` +
-      `&outputMint=${WSOL.toBase58()}&amount=${amountIn}` +
+      `https://api.jup.ag/swap/v2/build?inputMint=${inMint.toBase58()}` +
+      `&outputMint=${outMint.toBase58()}&amount=${amountIn}` +
       `&taker=${vault.toBase58()}&maxAccounts=24&onlyDirectRoutes=true` +
       // Pin the venue *for the test only*. Left unconstrained, Jupiter routes
       // through oracle-quoted venues (BisonFi, Quantum) whose own on-chain
@@ -226,11 +251,19 @@ describe("vault — swap execution against forked mainnet", function () {
       // the account and send native SOL, which the balance assertion — and the
       // custody model — would rightly reject.
       `&wrapAndUnwrapSol=false&slippageBps=100`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`jupiter /build ${r.status}: ${await r.text()}`);
-    const j: any = await r.json();
-    if (!j.swapInstruction) throw new Error(`no route: ${JSON.stringify(j).slice(0, 200)}`);
-    return j.swapInstruction;
+    // The public endpoint rate-limits a test run that quotes several times in a
+    // row. A 429 is not a verdict on the vault, so back off rather than fail.
+    for (let attempt = 0; ; attempt++) {
+      const r = await fetch(url);
+      if (r.status === 429 && attempt < 4) {
+        await new Promise((res) => setTimeout(res, 2_000 * (attempt + 1)));
+        continue;
+      }
+      if (!r.ok) throw new Error(`jupiter /build ${r.status}: ${await r.text()}`);
+      const j: any = await r.json();
+      if (!j.swapInstruction) throw new Error(`no route: ${JSON.stringify(j).slice(0, 200)}`);
+      return j.swapInstruction;
+    }
   }
 
   const executeTx = (si: any, jupiterProgram = JUPITER) =>
@@ -277,6 +310,17 @@ describe("vault — swap execution against forked mainnet", function () {
   const bal = async (a: PublicKey) =>
     BigInt((await connection.getTokenAccountBalance(a)).value.amount);
 
+  const setCooldown = (cooldownSeconds: number) =>
+    program.methods
+      .updateLimits({
+        maxTradeBps: 1_000, maxSlippageBps: 100, dailyLossLimitBps: 500,
+        cooldownSeconds, maxOracleStalenessSec: 30, maxConfBps: 100,
+        maxOracleDeviationBps: 200,
+      })
+      .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+
   it("swaps the authorized amount and keeps the proceeds in the vault", async () => {
     await seedIntent();
     await refreshOracle();
@@ -311,6 +355,75 @@ describe("vault — swap execution against forked mainnet", function () {
 
     const vc = await program.account.vaultConfig.fetch(vault);
     expect(vc.nonce.toString(), "nonce must advance").to.not.equal("0");
+  });
+
+  /**
+   * The stop-loss path, which never worked.
+   *
+   * The circuit returns the *entire* base balance on a stop, and `execute_trade`
+   * capped amount_in at max_trade_bps of the source — a cap that can never
+   * exceed 50%. So every stop-loss reverted with TradeTooLarge and the vault's
+   * only downside control was dead. Exits are now uncapped; entries are not.
+   */
+  it("executes a full-position exit, which the size cap used to reject", async () => {
+    const held = 2_000_000_000n; // 2 SOL
+    await setToken(vault, WSOL, held);
+    await refreshOracle();
+    // side SELL, spending the whole base balance — far above max_trade_bps.
+    await seedIntent({ side: SIDE_SELL, amountIn: held });
+
+    const si = await route(held, SIDE_SELL);
+    const qBefore = await bal(vaultQuote);
+    await execute(si);
+
+    const bAfter = await bal(vaultBase);
+    const qAfter = await bal(vaultQuote);
+    console.log(`      exited ${(Number(held) / 1e9).toFixed(2)} SOL ` +
+      `-> ${(Number(qAfter - qBefore) / 1e6).toFixed(2)} USDC`);
+
+    expect(bAfter.toString(), "whole position must be gone").to.equal("0");
+    expect(qAfter > qBefore, "proceeds must land in the vault").to.equal(true);
+  });
+
+  /**
+   * A cooldown must throttle entries without ever blocking the way out —
+   * execute_trade is permissionless, so a symmetric cooldown would let anyone
+   * burn the window on a benign trade and lock out a de-risking exit.
+   */
+  it("throttles entries on cooldown but never exits", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await setToken(vault, WSOL, 0n);
+
+    // Earlier tests already stamped last_trade_ts, so the first entry here has
+    // to happen with the cooldown off; the point under test is the second one.
+    // Half the cap. TRADE_IN is exactly max_trade_bps of DEPOSIT, and this test
+    // is about the cooldown, not about the size boundary.
+    const entry = TRADE_IN / 2n;
+    await refreshOracle();
+    await seedIntent({ amountIn: entry });
+    await execute(await route(entry));
+
+    await setCooldown(3_600);
+    await refreshOracle();
+    await seedIntent({ amountIn: entry });
+    try {
+      await execute(await route(entry));
+      expect.fail("second entry ignored the cooldown");
+    } catch (e) {
+      expect(String(e)).to.match(/CooldownActive/);
+    }
+
+    // An exit inside the same window: allowed.
+    const held = await bal(vaultBase);
+    expect(Number(held), "need base to exit").to.be.greaterThan(0);
+    await refreshOracle();
+    await seedIntent({ side: SIDE_SELL, amountIn: held });
+    await execute(await route(held, SIDE_SELL));
+    expect((await bal(vaultBase)).toString(), "exit must clear").to.equal("0");
+
+    // Leave the vault as we found it — a 3600s cooldown would otherwise make
+    // every later test fail with CooldownActive instead of its own assertion.
+    await setCooldown(0);
   });
 
   it("refuses to swap through anything but the pinned aggregator", async () => {

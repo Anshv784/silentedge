@@ -24,7 +24,23 @@ pub struct RiskLimits {
     pub max_trade_bps: u16,
     /// Max tolerated slippage on a swap.
     pub max_slippage_bps: u16,
-    /// Max cumulative realised loss per UTC day before trading halts.
+    /// **STORED, NOT ENFORCED.** Nothing reads this field.
+    ///
+    /// It was documented as "max cumulative realised loss per UTC day", which
+    /// this program cannot measure. Realised P&L needs a cost basis, and base
+    /// tokens enter and leave outside trading — `deposit` and `withdraw` both
+    /// accept either mint — so assigning basis means pricing a withdrawal,
+    /// which means putting the oracle on the withdraw path. `withdraw` must
+    /// keep working when Pyth, Arcium and the operator are all unavailable, so
+    /// that trade is not available.
+    ///
+    /// Marking to market is measurable but is not loss: a NAV fall from SOL
+    /// simply dropping is indistinguishable on chain from a fall caused by
+    /// trading, and halting on it would disarm the vault precisely when a stop
+    /// needs to fire.
+    ///
+    /// Left in place rather than deleted because removing it changes the
+    /// account layout again. Do not describe it as protection.
     pub daily_loss_limit_bps: u16,
     /// Minimum seconds between trades.
     pub cooldown_seconds: u32,
@@ -50,6 +66,12 @@ impl RiskLimits {
         );
         require!(
             self.daily_loss_limit_bps > 0 && self.daily_loss_limit_bps <= BPS_DENOMINATOR,
+            VaultError::InvalidRiskLimit
+        );
+        // This field had no bound at all, so a vault could be created with a
+        // cooldown of ~136 years.
+        require!(
+            self.cooldown_seconds <= MAX_COOLDOWN_SECONDS,
             VaultError::InvalidRiskLimit
         );
         require!(
@@ -83,6 +105,25 @@ pub struct VaultConfig {
     /// Monotonic. Bumped on every executed trade, so an old authorization can
     /// never be replayed against a vault that has moved on.
     pub nonce: u64,
+    /// Unix time of the last executed trade, for `cooldown_seconds`.
+    ///
+    /// Zero until the first trade, which is what lets the first one through
+    /// without a special case.
+    pub last_trade_ts: i64,
+
+    /// Space for fields this struct does not have yet. Do not read or write it.
+    ///
+    /// Adding `last_trade_ts` above made every already-created vault fail to
+    /// load with `AccountDidNotDeserialize` (3003) — the account was allocated
+    /// at the old `INIT_SPACE` and borsh cannot fill the missing bytes. That is
+    /// survivable on devnet, where the stranded vaults hold a test mint. It
+    /// would not be survivable on mainnet, because `withdraw` takes
+    /// `Account<'info, VaultConfig>` and would be stranded with everything else
+    /// — the one path that must keep working no matter what.
+    ///
+    /// A future field must be carved *out of this reserve*, keeping the total
+    /// size identical, never appended after it. Appending strands every vault.
+    pub reserved: [u8; 64],
 }
 
 impl VaultConfig {

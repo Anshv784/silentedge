@@ -219,10 +219,98 @@ describe("vault — trade authorization", () => {
       for (const acc of ix.accounts) if (acc.signer) signers.add(acc.name);
     }
     // owner: the user. payer/executor: pays fees, holds no privilege.
-    // authority: pause/resume, checked against owner or guardian in the handler.
+    // authority: pause/resume/stop, checked against the owner in the handler.
     expect([...signers].sort(), "an unexpected signer role appeared").to.deep.equal(
       ["authority", "executor", "owner", "payer"]
     );
+  });
+
+  // ------------------------------------------------------------ risk limits
+
+  const LIMITS = {
+    maxTradeBps: 1_000, maxSlippageBps: 50, dailyLossLimitBps: 500,
+    cooldownSeconds: 60, maxOracleStalenessSec: 30, maxConfBps: 100,
+    maxOracleDeviationBps: 200,
+  };
+
+  const updateLimits = (signer: Keypair, vault: PublicKey, limits: any) =>
+    program.methods
+      .updateLimits(limits)
+      .accountsPartial({ owner: signer.publicKey, vaultConfig: vault })
+      .signers([signer]);
+
+  /**
+   * Limits were write-once. With them enforced, a bad value chosen at creation
+   * would be permanent for a vault that has no close instruction.
+   */
+  it("lets the owner replace the risk envelope", async () => {
+    const { owner, vault } = await setupVault();
+    await updateLimits(owner, vault, { ...LIMITS, cooldownSeconds: 0 }).rpc();
+    const v = await program.account.vaultConfig.fetch(vault);
+    expect(v.limits.cooldownSeconds).to.equal(0);
+  });
+
+  it("refuses a stranger's attempt to loosen someone else's limits", async () => {
+    const { vault } = await setupVault();
+    const stranger = await newFundedKeypair();
+    try {
+      await updateLimits(stranger, vault, { ...LIMITS, maxTradeBps: 5_000 }).rpc();
+      assert.fail("stranger rewrote another vault's limits");
+    } catch (e) {
+      // Seeds are derived from the signer, so a stranger's PDA is a different
+      // account entirely — it does not exist.
+      expect(e.toString()).to.match(/ConstraintSeeds|AccountNotInitialized|has_one/i);
+    }
+  });
+
+  /**
+   * An intent authorized under the old envelope must not execute under the new
+   * one. The intent carries no copy of the limits, so the nonce is the lever.
+   */
+  it("invalidates in-flight authorizations when limits change", async () => {
+    const { owner, vault } = await setupVault();
+    const before = await program.account.vaultConfig.fetch(vault);
+    await updateLimits(owner, vault, { ...LIMITS, maxTradeBps: 2_000 }).rpc();
+    const after = await program.account.vaultConfig.fetch(vault);
+    expect(Number(after.nonce)).to.be.greaterThan(Number(before.nonce));
+  });
+
+  it("still bounds every limit on the way in", async () => {
+    const { owner, vault } = await setupVault();
+    for (const [field, value] of [
+      ["maxTradeBps", 6_000],            // ceiling 5000
+      ["maxOracleStalenessSec", 120],    // ceiling tightened to 30
+      ["maxConfBps", 500],               // ceiling tightened to 100
+      ["cooldownSeconds", 86_400],       // ceiling 3600, previously unbounded
+    ] as [string, number][]) {
+      try {
+        await updateLimits(owner, vault, { ...LIMITS, [field]: value }).rpc();
+        assert.fail(`accepted out-of-range ${field} = ${value}`);
+      } catch (e) {
+        expect(e.toString(), `${field}`).to.match(/InvalidRiskLimit/);
+      }
+    }
+  });
+
+  /**
+   * GUARDIAN resolved to this program's own id, which is the public key of the
+   * deploy keypair — so the deployer could pause any user's vault. Gone now;
+   * this asserts no non-owner authority survives anywhere in the instruction set.
+   */
+  it("gives no one but the owner authority over a vault", async () => {
+    const { vault } = await setupVault();
+    const stranger = await newFundedKeypair();
+    for (const ix of ["pause", "stop"] as const) {
+      try {
+        await (program.methods as any)[ix]()
+          .accountsPartial({ authority: stranger.publicKey, vaultConfig: vault })
+          .signers([stranger])
+          .rpc();
+        assert.fail(`stranger called ${ix}`);
+      } catch (e) {
+        expect(e.toString(), ix).to.match(/NotPauseAuthority|NotOwner|ConstraintHasOne/i);
+      }
+    }
   });
 
   /**

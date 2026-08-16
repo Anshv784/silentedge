@@ -121,11 +121,11 @@ honest — an executor-supplied floor would make the band meaningless.
 | **T-24** | Stale oracle triggers a bad trade | `get_price_no_older_than()` with an explicit threshold, checked **on-chain** at both evaluation and execution. | Low. |
 | **T-25** | Wide confidence interval (illiquid/volatile) | Reject trade when `conf/price > max_conf_bps`. Pyth's guidance is to widen spreads; we refuse outright — simpler and safer. | Low. |
 | **T-26** | **DEX price manipulation to trigger a stop** | This is why Pyth, not a DEX quote, is the trigger. Moving a pool does not move the Pyth aggregate. | Substantially mitigated by oracle choice. Would be a critical flaw had we used Jupiter quotes as the trigger. |
-| **T-27** | Sandwich attack on our swap | On-chain `min_amount_out`, `max_slippage_bps`, Pyth deviation band checked post-swap, optional `tx.jup.ag` submission with tip. | **Partially mitigated.** `TradeIntent` is public before execution, so intent is visible. Short expiry windows reduce but do not eliminate exposure. Do not claim front-running resistance. |
+| **T-27** | Sandwich attack on our swap | On-chain `min_amount_out` derived from Pyth at execution time and asserted after the CPI, bounded by `max_slippage_bps`; optional `tx.jup.ag` submission with tip. There is **no** separate post-swap deviation-band check — this row claimed one for a while and none existed. | **Partially mitigated.** `TradeIntent` is public before execution, so intent is visible. Short expiry windows reduce but do not eliminate exposure. Do not claim front-running resistance. |
 | **T-28** | Intent visible between callback and execution | Short `expires_at_slot`; permissionless execution lets anyone (including the user) close the window fast. | Inherent to splitting decision from execution — which the 1,232-byte callback limit forces. |
 | **T-29** | Liquidity disappears / route fails | Swap reverts atomically; intent stays unconsumed until expiry. | Low. |
 | **T-30** | Rapid price movement between decision and execution | `min_amount_out` fixed at intent creation; slot expiry bounds staleness. | Trade simply fails — correct direction. |
-| **T-31** | Repeated triggering drains value via fees/slippage | Cooldown, daily loss limit, circuit breaker on anomalies. | Low. |
+| **T-31** | Repeated triggering drains value via fees/slippage | `cooldown_seconds`, enforced on entries in `execute_trade`. Owner can pause. **`daily_loss_limit_bps` is stored and NOT enforced** — see state.rs for why realised P&L is not measurable here without putting the oracle on the withdraw path. | **Partial.** A cooldown bounds the rate, not the total. Exits are deliberately exempt so a de-risking sell is never throttled, which also means churn via repeated sells is not rate-limited. |
 
 ---
 
@@ -136,7 +136,7 @@ honest — an executor-supplied floor would make the band meaningless.
 | **T-32** | Replay of an old trade action | Four layers: `consumed` flag, `vault_nonce` equality, `strategy_version` binding, slot expiry. |
 | **T-33** | Fake/spoofed computation result | BLS `verify_output()` against cluster account. |
 | **T-34** | Unauthorized signer submits a trade | Executor is intentionally permissionless and holds no privilege; every parameter is already fixed in `TradeIntent` and every rule is checked on-chain. There is no signer to compromise. |
-| **T-35** | Trade exceeding limits | `max_trade_bps`, daily loss, cooldown — all checked in `execute_trade` against on-chain state, not against callback data. |
+| **T-35** | Trade exceeding limits | `max_trade_bps` and `cooldown_seconds`, checked in `execute_trade` against on-chain state rather than callback data — **on entries only**. Exits are uncapped and unthrottled on purpose: the cap can never exceed 50%, so applying it to a full-position stop rejected every stop-loss, and a sell's value is already bounded by the oracle-derived `min_out`. Daily loss is not enforced. |
 | **T-36** | Arbitrary CPI / arbitrary program execution | Swap program ID is a **pinned constant**, never read from instruction data. Mint allowlist enforced. No generic CPI executor exists anywhere in the program. |
 | **T-37** | **Operator forges trade authorizations via a migrated cluster** — *new, and the most serious finding of this pass* | Arcium's generated constraint derives `cluster_account` from `mxe_account`, so it silently follows a migration; `verify_output()` then validates BLS against *that* cluster. An operator who migrated to a cluster they control could mint attestations our program accepts as genuine MPC results. **Mitigation: pin `cluster_account` to a compiled-in constant** (ARCHITECTURE §7.1). Changing it requires a program upgrade, which the timelocked multisig makes public and delayed. | **Mitigated**, and it must stay mitigated — this constraint is load-bearing for custody, not just privacy. Any refactor touching it requires review. |
 
@@ -183,12 +183,17 @@ withdrawal while paused → **succeeds** · cross-vault account substitution →
 non-allowlisted mint → rejected · overflow/underflow → rejected.
 
 **Authorization:** forged callback → rejected · replayed intent → rejected · expired intent →
-rejected · stale `strategy_version` → rejected · oversized trade → rejected · cooldown
-violation → rejected · non-Jupiter swap program → rejected · swap output to a non-vault ATA →
-rejected.
+rejected · stale `strategy_version` → rejected · oversized *entry* → rejected · cooldown
+violation on an *entry* → rejected · non-Jupiter swap program → rejected · swap output to a
+non-vault ATA → rejected · full-position exit → **allowed**, uncapped and unthrottled.
 
 **Oracle:** stale price → rejected · wide confidence → rejected · missing account → rejected ·
-execution outside deviation band → rejected.
+fill below the oracle-derived floor → rejected.
+
+`max_oracle_deviation_bps` is stored and unread. A decision-price-versus-execution-price band
+would fire essentially never inside a ~72-slot intent window, and the price it would compare
+against is chosen by whoever queues the evaluation. The oracle-derived `min_out`, recomputed
+at execution time, is the check that actually does this job.
 
 **Confidentiality:** plaintext strategy absent from network requests, server logs, database,
 and transaction data (Phase 6) · action-only reveal confirmed in callback data · no threshold
