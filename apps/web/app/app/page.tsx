@@ -28,6 +28,19 @@ import {
 } from "@/lib/vault-program";
 import { VAULT_PROGRAM_ID } from "@silentedge/config";
 import { useConnection } from "@solana/wallet-adapter-react";
+import { PublicKey } from "@solana/web3.js";
+import {
+  readActivity,
+  readOraclePrice,
+  vaultValueInQuote,
+  type Activity,
+} from "@/lib/activity";
+import { readLimits } from "@/lib/vault-program";
+
+const PYTH_SOL_USD = new PublicKey(
+  process.env.NEXT_PUBLIC_PYTH_SOL_USD ??
+    "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"
+);
 
 // The wallet button reads `window` on mount, so it cannot be server-rendered.
 const WalletButton = dynamic(
@@ -59,6 +72,9 @@ export default function Page() {
   const [pending, setPending] = useState<{ side: number; amountIn: bigint } | null>(null);
   const [executing, setExecuting] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
+  const [activity, setActivity] = useState<Activity[] | null>(null);
+  const [oracle, setOracle] = useState<{ price: number; publishedAt: number } | null>(null);
+  const [limits, setLimits] = useState<Awaited<ReturnType<typeof readLimits>>>(null);
 
   useEffect(() => {
     if (!connected) return;
@@ -69,6 +85,31 @@ export default function Page() {
     if (!program || !publicKey) return;
     readMxeVersion(program, publicKey).then(setMxeVersion).catch(() => {});
   }, [program, publicKey, submittedVersion]);
+
+  // Vault history, risk limits and the oracle price the program itself reads.
+  // All three come from the chain: nothing here is remembered by the app, so a
+  // reload shows the same thing and the executor's work is visible too.
+  useEffect(() => {
+    if (!program || !publicKey || !v.vaultAddress) return;
+    let alive = true;
+    const load = async () => {
+      const [a, l, o] = await Promise.all([
+        readActivity(connection, v.vaultAddress!).catch(() => [] as Activity[]),
+        readLimits(program, publicKey).catch(() => null),
+        readOraclePrice(connection, PYTH_SOL_USD).catch(() => null),
+      ]);
+      if (!alive) return;
+      setActivity(a);
+      setLimits(l);
+      setOracle(o);
+    };
+    load();
+    const id = setInterval(load, 20_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [program, publicKey, connection, v.vaultAddress, receipts.length]);
 
   // An authorization is only spendable for ~72 seconds, so this polls rather
   // than waiting for a user action that would usually arrive too late.
@@ -353,6 +394,40 @@ export default function Page() {
                           {v.vaultStatus}
                         </span>
                       </div>
+                      <div className="flex items-baseline justify-between gap-4 py-3">
+                        <span className="text-[13px] text-[var(--color-ink-soft)]">
+                          Value
+                          <span className="ml-1.5 text-[11px]">
+                            (oracle-derived)
+                          </span>
+                        </span>
+                        <span className="tabular text-[13px]">
+                          {(() => {
+                            const val = vaultValueInQuote(
+                              v.vaultUsdc,
+                              v.vaultWrappedSol,
+                              oracle?.price ?? null
+                            );
+                            if (v.loading) return "…";
+                            if (val === null) return "unavailable";
+                            return `${val.toLocaleString(undefined, {
+                              maximumFractionDigits: 2,
+                            })} ${QUOTE_SYMBOL}`;
+                          })()}
+                        </span>
+                      </div>
+                      <p className="pb-3 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                        Balances valued at the Pyth price this program reads
+                        {oracle
+                          ? ` ($${oracle.price.toFixed(2)}, ${Math.max(
+                              0,
+                              Math.round(Date.now() / 1000 - oracle.publishedAt)
+                            )}s old)`
+                          : ""}
+                        . Profit and loss is not shown: the vault records no cost
+                        basis, so it cannot be computed from chain state, and
+                        estimating one would be a guess presented as a number.
+                      </p>
                       <div className="flex flex-wrap items-center gap-2 py-3">
                         {v.vaultStatus === "active" ? (
                           <button
@@ -417,6 +492,73 @@ export default function Page() {
                 )}
               </Panel>
             </div>
+
+            {v.vaultAddress ? (
+              <Panel title="Risk limits" index="05" note="Enforced on chain, not by this page.">
+                {limits ? (
+                  <dl className="tabular grid grid-cols-2 gap-x-6 gap-y-1.5 text-[12px]">
+                    <dt className="text-[var(--color-ink-soft)]">Trade size</dt>
+                    <dd>{limits.sizeBps / 100}% of the spendable balance</dd>
+                    <dt className="text-[var(--color-ink-soft)]">Max per trade</dt>
+                    <dd>{limits.maxTradeBps / 100}% (entries only)</dd>
+                    <dt className="text-[var(--color-ink-soft)]">Max slippage</dt>
+                    <dd>{limits.maxSlippageBps / 100}%</dd>
+                    <dt className="text-[var(--color-ink-soft)]">Cooldown</dt>
+                    <dd>{limits.cooldownSeconds}s between entries</dd>
+                    <dt className="text-[var(--color-ink-soft)]">Max price age</dt>
+                    <dd>{limits.maxOracleStalenessSec}s</dd>
+                    <dt className="text-[var(--color-ink-soft)]">Max price uncertainty</dt>
+                    <dd>{limits.maxConfBps / 100}%</dd>
+                  </dl>
+                ) : (
+                  <p className="text-[12px] text-[var(--color-ink-soft)]">
+                    Reading limits…
+                  </p>
+                )}
+                <p className="mt-3 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                  Exits are exempt from the size cap and the cooldown on purpose:
+                  a stop-loss sells the whole position, and a cap can never
+                  exceed half of it. Two of the stored limits — a daily loss
+                  limit and an execution deviation band — are{" "}
+                  <strong>not enforced</strong>; see SECURITY_AUDIT.md rather
+                  than reading them as protection.
+                </p>
+              </Panel>
+            ) : null}
+
+            {v.vaultAddress ? (
+              <Panel title="Vault activity" index="06" note="Read from the chain, not from this session.">
+                {activity === null ? (
+                  <p className="text-[12px] text-[var(--color-ink-soft)]">Loading…</p>
+                ) : activity.length === 0 ? (
+                  <p className="text-[12px] leading-relaxed text-[var(--color-ink-soft)]">
+                    Nothing yet. Activity appears here once the vault is used —
+                    including anything an executor does on your behalf.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-[var(--color-rule)]">
+                    {activity.map((a) => (
+                      <li key={a.signature} className="flex items-baseline justify-between gap-3 py-2">
+                        <span className="text-[12px]">
+                          {a.summary}
+                          {a.failed ? (
+                            <span className="ml-2 text-[var(--color-exposed)]">failed</span>
+                          ) : null}
+                        </span>
+                        <a
+                          className="tabular text-[11px] text-[var(--color-ink-soft)] underline-offset-2 hover:underline"
+                          href={`https://explorer.solana.com/tx/${a.signature}?cluster=devnet`}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                        >
+                          {a.at ? new Date(a.at * 1000).toLocaleString() : "pending"}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Panel>
+            ) : null}
 
             <Receipts items={receipts} />
 
