@@ -129,6 +129,37 @@ Use an RPC with a real rate limit. The circuit upload is ~70 chunked
 transactions and public endpoints throttle it into a corrupt partial upload —
 which is exactly the failure documented in arcium-hello-world.md.
 
+## Callback account lists must mirror the callback struct
+
+Every account a `#[callback_accounts]` struct declares must also appear in the
+`CallbackAccount` list passed to `queue_computation`. Miss one and the
+computation runs, gets paid for, and *then* the callback fails at account
+resolution with `AnchorError caused by account: <name>`.
+
+Nothing catches this at compile time — the struct and the list are written in
+different places and the compiler sees no relationship between them. It also
+cannot be caught locally, because reaching a callback at all requires a real
+cluster. It cost a devnet deploy cycle to find.
+
+Symptom to recognise: `evaluate_strategy` succeeds, `awaitComputationFinalization`
+returns, and the account the callback was supposed to write is untouched. Check
+the program's recent transactions for `CallbackComputation` with an
+`AnchorError caused by account:` line.
+
+## Box accounts in Arcium callbacks
+
+Anchor account structs are stack-allocated and Solana's frame is 4 KB. A
+callback carrying a few application accounts overflows it, and the failure is
+`Access violation reading 8 bytes at address 0x… (in unallocated region)` —
+nothing that mentions stacks or sizes.
+
+`StrategyState` alone is ~360 bytes; three unboxed accounts alongside the six
+standard callback accounts was enough. Boxing them fixed it. Worth doing
+pre-emptively in any callback that touches more than a couple of accounts.
+
+Like the account-list mismatch above, this cannot surface locally — reaching a
+callback requires a real cluster.
+
 ## A dependency footgun worth knowing about
 
 `@arcium-hq/client` 0.14.1 does not bundle for browsers out of the box. Its ESM

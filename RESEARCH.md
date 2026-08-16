@@ -110,9 +110,13 @@ different, incompatible signature scheme. Therefore:
 
 **Additional gaps** (documentation is silent, so we must assume the worst):
 
-- There is **no documented API to retrieve the MXE signing public key**, on-chain or
-  off. Grep across the full corpus for a signing-pubkey accessor returns nothing. Without
-  a trusted public key, an on-chain verifier has no anchor of trust.
+- ~~There is no documented API to retrieve the MXE signing public key.~~ **Correction:**
+  `arcium mxe-info <program-id>` prints it as `ArcisEd25519 pubkey` (observed:
+  `6ERSm4bpepSMoT7E4hwq8cKdU9miJQqArfpt35PwMnum` for our vault MXE), so it is
+  retrievable after all. This does **not** change the verdict: the key is still
+  SHA3-512 Ed25519, so it cannot sign a Solana transaction and Solana's
+  precompile cannot verify its signatures. The blocker is the scheme, not
+  key discovery.
 - There is **no documented authorization model** for signing. Nothing gates *what* may be
   signed beyond what the circuit author writes. Anyone who can queue a computation against
   a `cluster_sign`-style instruction can obtain a signature over a message of their choosing.

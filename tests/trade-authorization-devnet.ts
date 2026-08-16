@@ -1,0 +1,240 @@
+/**
+ * Trade authorization, end to end against the live Arcium devnet cluster.
+ *
+ * The structural tests prove nothing *else* can authorize a trade. This proves
+ * the one thing that can — a callback whose BLS signature verified against the
+ * pinned cluster — actually does, and that the resulting authorization is
+ * bounded the way it claims.
+ *
+ * Requires a deployed vault MXE. Skips otherwise.
+ */
+
+import * as anchor from "@anchor-lang/core";
+import web3Pkg from "@solana/web3.js";
+import BN from "bn.js";
+import { randomBytes } from "crypto";
+import fs from "fs";
+import { expect } from "chai";
+import {
+  awaitComputationFinalization, getArciumEnv, getCompDefAccOffset, getArciumProgram,
+  RescueCipher, deserializeLE, getMXEPublicKey, getMXEAccAddress, getMempoolAccAddress,
+  getCompDefAccAddress, getExecutingPoolAccAddress, getComputationAccAddress,
+  getClusterAccAddress, x25519,
+} from "@arcium-hq/client";
+
+const { PublicKey, Keypair, SystemProgram } = web3Pkg;
+
+const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const BASE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+const QUOTE_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+const PYTH_SOL_USD = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
+
+const VAULT_SEED = Buffer.from("vault");
+const STRATEGY_SEED = Buffer.from("strategy");
+const INTENT_SEED = Buffer.from("intent");
+
+const usd = (n: number) => BigInt(Math.round(n * 1e6));
+const fmt = (v: bigint) => `$${(Number(v) / 1e6).toFixed(2)}`;
+const NEVER_SELL = 18_446_744_073_709_551_615n;
+const NEVER_BUY = 0n;
+const SIZE_BPS = 1_000n;
+
+describe("vault — authorization on devnet", function () {
+  this.timeout(900_000);
+
+  const provider = anchor.AnchorProvider.env();
+  anchor.setProvider(provider);
+  const program = anchor.workspace.Vault as any;
+  const arciumProgram = getArciumProgram(provider);
+
+  const owner = readKeypair(process.env.ANCHOR_WALLET!);
+  const vault = PublicKey.findProgramAddressSync(
+    [VAULT_SEED, owner.publicKey.toBuffer()], program.programId)[0];
+  const strategyPda = PublicKey.findProgramAddressSync(
+    [STRATEGY_SEED, vault.toBuffer()], program.programId)[0];
+  const intentPda = PublicKey.findProgramAddressSync(
+    [INTENT_SEED, vault.toBuffer()], program.programId)[0];
+
+  const ata = (o: any, m: any, off = false) => {
+    const [a] = PublicKey.findProgramAddressSync(
+      [o.toBuffer(), TOKEN_PROGRAM.toBuffer(), m.toBuffer()], ATA_PROGRAM);
+    return a;
+  };
+
+  const awaitEvent = async (name: string): Promise<any> => {
+    let id: number;
+    const ev = await new Promise<any>((res) => {
+      id = program.addEventListener(name as never, (e: any) => res(e));
+    });
+    await program.removeEventListener(id!);
+    return ev;
+  };
+
+  let env: any;
+  let mxePublicKey: Uint8Array;
+
+  before(async function () {
+    try {
+      env = getArciumEnv();
+      await arciumProgram.account.mxeAccount.fetch(getMXEAccAddress(program.programId));
+      mxePublicKey = await getMXEPublicKey(provider, program.programId);
+    } catch {
+      console.log("      no vault MXE reachable — skipping");
+      this.skip();
+      return;
+    }
+
+    if (!(await provider.connection.getAccountInfo(vault))) {
+      await program.methods.initializeVault({
+        maxTradeBps: 1_000, maxSlippageBps: 50, dailyLossLimitBps: 500,
+        cooldownSeconds: 60, maxOracleStalenessSec: 30, maxConfBps: 100,
+        maxOracleDeviationBps: 200,
+      }).accountsPartial({
+        owner: owner.publicKey, vaultConfig: vault,
+        baseMint: BASE_MINT, quoteMint: QUOTE_MINT,
+        vaultBaseAta: ata(vault, BASE_MINT, true),
+        vaultQuoteAta: ata(vault, QUOTE_MINT, true),
+        tokenProgram: TOKEN_PROGRAM, associatedTokenProgram: ATA_PROGRAM,
+        systemProgram: SystemProgram.programId,
+      }).signers([owner]).rpc({ commitment: "confirmed" });
+      console.log("      vault created:", vault.toBase58());
+    }
+    if (!(await provider.connection.getAccountInfo(intentPda))) {
+      await program.methods.initTradeIntent().accountsPartial({
+        owner: owner.publicKey, vaultConfig: vault, tradeIntent: intentPda,
+        systemProgram: SystemProgram.programId,
+      }).signers([owner]).rpc({ commitment: "confirmed" });
+    }
+  });
+
+  async function livePrice(): Promise<bigint> {
+    const d = (await provider.connection.getAccountInfo(PYTH_SOL_USD))!.data;
+    const off = 8 + 32 + 1 + 32;
+    const raw = d.readBigInt64LE(off);
+    const shift = d.readInt32LE(off + 16) + 6;
+    return shift >= 0 ? raw * 10n ** BigInt(shift) : raw / 10n ** BigInt(-shift);
+  }
+
+  /** Submit a strategy, then have the cluster re-encrypt it to Enc<Mxe, _>. */
+  async function submitAndConvert(fields: bigint[]) {
+    const priv = x25519.utils.randomSecretKey();
+    const pub = x25519.getPublicKey(priv);
+    const cipher = new RescueCipher(x25519.getSharedSecret(priv, mxePublicKey));
+    const nonce = randomBytes(16);
+    const cts = cipher.encrypt(fields, nonce);
+
+    await program.methods.submitStrategy(
+      cts.map((c: number[]) => Array.from(c)),
+      new BN(deserializeLE(nonce).toString()),
+      Array.from(pub)
+    ).accountsPartial({
+      owner: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
+      systemProgram: SystemProgram.programId,
+    }).signers([owner]).rpc({ commitment: "confirmed" });
+
+    const off = new BN(randomBytes(8), "hex");
+    await program.methods.convertStrategy(off).accountsPartial({
+      payer: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
+      computationAccount: getComputationAccAddress(env.arciumClusterOffset, off),
+      clusterAccount: getClusterAccAddress(env.arciumClusterOffset),
+      mxeAccount: getMXEAccAddress(program.programId),
+      mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
+      executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
+      compDefAccount: getCompDefAccAddress(program.programId,
+        Buffer.from(getCompDefAccOffset("store_strategy")).readUInt32LE()),
+    }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
+    await awaitComputationFinalization(provider, off, program.programId, "confirmed");
+  }
+
+  async function evaluate() {
+    const authorized = awaitEvent("tradeAuthorized").catch(() => null);
+    const held = awaitEvent("evaluationHeld").catch(() => null);
+    const off = new BN(randomBytes(8), "hex");
+    await program.methods.evaluateStrategy(off).accountsPartial({
+      payer: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
+      tradeIntent: intentPda, vaultQuoteAta: ata(vault, QUOTE_MINT, true),
+      priceUpdate: PYTH_SOL_USD,
+      computationAccount: getComputationAccAddress(env.arciumClusterOffset, off),
+      clusterAccount: getClusterAccAddress(env.arciumClusterOffset),
+      mxeAccount: getMXEAccAddress(program.programId),
+      mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
+      executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
+      compDefAccount: getCompDefAccAddress(program.programId,
+        Buffer.from(getCompDefAccOffset("evaluate_strategy")).readUInt32LE()),
+    }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
+    await awaitComputationFinalization(provider, off, program.programId, "confirmed");
+    await Promise.race([authorized, held, new Promise((r) => setTimeout(r, 8000))]);
+    return program.account.tradeIntent.fetch(intentPda);
+  }
+
+  it("converts the submitted strategy to MXE-encrypted state", async () => {
+    const p = await livePrice();
+    await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    const s = await program.account.strategyState.fetch(strategyPda);
+    expect(s.mxeVersion).to.be.greaterThan(0);
+    console.log(`      converted, mxe_version ${s.mxeVersion}`);
+  });
+
+  /** A verified callback is the only thing that can produce an authorization. */
+  it("writes a bounded authorization from a verified callback", async () => {
+    const p = await livePrice();
+    const intent = await evaluate();
+    console.log(`      live ${fmt(p)} -> side ${intent.side}, amount ${intent.amountIn}`);
+
+    expect(intent.side, "expected a BUY authorization").to.equal(1);
+    expect(intent.consumed).to.equal(false);
+    expect(Number(intent.amountIn)).to.be.greaterThan(0);
+
+    // Bounded, not open-ended.
+    const slot = await provider.connection.getSlot("confirmed");
+    expect(Number(intent.expiresAtSlot)).to.be.greaterThan(slot);
+    expect(Number(intent.expiresAtSlot) - slot).to.be.lessThanOrEqual(180);
+
+    const v = await program.account.vaultConfig.fetch(vault);
+    expect(intent.vaultNonce.toString()).to.equal(v.nonce.toString());
+    const s = await program.account.strategyState.fetch(strategyPda);
+    expect(intent.strategyVersion).to.equal(s.mxeVersion);
+  });
+
+  /** HOLD authorizes nothing — a missing intent and "do not trade" are one state. */
+  it("authorizes nothing when the strategy says HOLD", async () => {
+    const p = await livePrice();
+    await submitAndConvert([p - usd(20), p + usd(20), p - usd(30), SIZE_BPS]);
+    const before = await program.account.tradeIntent.fetch(intentPda);
+    const intent = await evaluate();
+    console.log(`      band ${fmt(p - usd(20))}..${fmt(p + usd(20))} -> no new authorization`);
+    // Unchanged: the callback returned early without touching the intent.
+    expect(intent.amountIn.toString()).to.equal(before.amountIn.toString());
+    expect(intent.expiresAtSlot.toString()).to.equal(before.expiresAtSlot.toString());
+  });
+
+  /** Replacing the strategy must invalidate an authorization still in flight. */
+  it("invalidates an in-flight authorization when the strategy changes", async () => {
+    const p = await livePrice();
+    await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    const intent = await evaluate();
+    expect(intent.side).to.equal(1);
+    const authorizedVersion = intent.strategyVersion;
+
+    // A new submission bumps the version the intent was bound to.
+    await submitAndConvert([p + usd(15), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    const s = await program.account.strategyState.fetch(strategyPda);
+    expect(s.mxeVersion, "version should have moved").to.be.greaterThan(authorizedVersion);
+
+    try {
+      await program.methods.executeTrade().accountsPartial({
+        executor: owner.publicKey, vaultConfig: vault, tradeIntent: intentPda,
+        strategyState: strategyPda, vaultQuoteAta: ata(vault, QUOTE_MINT, true),
+        priceUpdate: PYTH_SOL_USD,
+      }).signers([owner]).rpc({ commitment: "confirmed" });
+      expect.fail("executed an authorization bound to a replaced strategy");
+    } catch (e) {
+      expect(String(e)).to.match(/IntentStrategyMismatch|Unknown action/);
+    }
+  });
+});
+
+function readKeypair(path: string): any {
+  return Keypair.fromSecretKey(Buffer.from(JSON.parse(fs.readFileSync(path, "utf-8"))));
+}

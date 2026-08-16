@@ -392,6 +392,10 @@ pub mod vault {
             vec![EvaluateStrategyCallback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
+                // Every account the callback struct declares must appear here
+                // too. Miss one and the callback fails at account resolution
+                // with "AnchorError caused by account: <name>" — after the
+                // computation has already run and been paid for.
                 &[
                     CallbackAccount {
                         pubkey: ctx.accounts.trade_intent.key(),
@@ -399,6 +403,10 @@ pub mod vault {
                     },
                     CallbackAccount {
                         pubkey: ctx.accounts.vault_config.key(),
+                        is_writable: false,
+                    },
+                    CallbackAccount {
+                        pubkey: ctx.accounts.strategy_state.key(),
                         is_writable: false,
                     },
                 ],
@@ -747,7 +755,7 @@ pub struct StoreStrategyCallback<'info> {
     /// CHECK: instructions_sysvar, checked by the account constraint
     pub instructions_sysvar: UncheckedAccount<'info>,
     #[account(mut)]
-    pub strategy_state: Account<'info, StrategyState>,
+    pub strategy_state: Box<Account<'info, StrategyState>>,
 }
 
 #[queue_computation_accounts("evaluate_strategy", payer)]
@@ -830,14 +838,18 @@ pub struct EvaluateStrategyCallback<'info> {
     #[account(address = ::arcium_anchor::solana_instructions_sysvar::ID)]
     /// CHECK: instructions_sysvar, checked by the account constraint
     pub instructions_sysvar: UncheckedAccount<'info>,
+    // Boxed: Anchor account structs live on the stack, and Solana's frame is
+    // 4 KB. StrategyState alone is ~360 bytes and these three together overflow
+    // it, which shows up as an access violation inside the callback rather than
+    // as anything resembling a size error.
     #[account(mut)]
-    pub trade_intent: Account<'info, TradeIntent>,
-    pub vault_config: Account<'info, VaultConfig>,
+    pub trade_intent: Box<Account<'info, TradeIntent>>,
+    pub vault_config: Box<Account<'info, VaultConfig>>,
     #[account(
         seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
         bump = strategy_state.bump,
     )]
-    pub strategy_state: Account<'info, StrategyState>,
+    pub strategy_state: Box<Account<'info, StrategyState>>,
 }
 
 #[init_computation_definition_accounts("store_strategy", payer)]
