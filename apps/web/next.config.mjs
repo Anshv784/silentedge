@@ -26,7 +26,10 @@ const csp = [
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
   // Solana RPC, Jupiter quotes, and wallet bridges. Nothing else.
-  "connect-src 'self' https://*.helius-rpc.com https://*.solana.com https://api.jup.ag https://*.jup.ag wss://*.helius-rpc.com wss://*.solana.com",
+  // Solana RPC, Jupiter quotes, Pyth's public price history, and wallet
+  // bridges. Nothing else — an injected script cannot post a draft strategy to
+  // a host that is not on this list.
+  "connect-src 'self' https://*.helius-rpc.com https://*.solana.com https://api.jup.ag https://*.jup.ag https://benchmarks.pyth.network wss://*.helius-rpc.com wss://*.solana.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'none'",

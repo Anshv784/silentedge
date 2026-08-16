@@ -326,7 +326,15 @@ export default function Page() {
               computation can read.
             </p>
           </div>
-          <WalletButton />
+          <div className="flex items-center gap-4">
+            <a
+              href="/app/market"
+              className="text-[13px] underline-offset-4 hover:underline"
+            >
+              Market
+            </a>
+            <WalletButton />
+          </div>
         </header>
 
         {!connected ? (
