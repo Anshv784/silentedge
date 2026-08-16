@@ -506,6 +506,43 @@ describe("vault — trade authorization", () => {
   });
 
   /**
+   * There is no fee, and that is a property of the instruction set.
+   *
+   * FEES.md claims SilentEdge takes nothing, and a claim like that is worth a
+   * detector rather than a promise: it holds only while no instruction can send
+   * value to an address that is not the vault's own owner. `withdraw` derives
+   * its destination from `vault_config.owner`, and the swap keeps both sides
+   * inside the vault's own ATAs — so a new instruction with a free-floating
+   * destination account is exactly what would quietly break it.
+   */
+  it("has no instruction that can pay anyone but the owner", async () => {
+    const idl: any = program.idl;
+    const suspicious = /treasury|fee|recipient|destination|payout|beneficiary/i;
+
+    for (const ix of idl.instructions) {
+      for (const acc of ix.accounts) {
+        expect(
+          suspicious.test(acc.name),
+          `${ix.name}.${acc.name} looks like a fee or payout destination`
+        ).to.equal(false);
+      }
+      for (const arg of ix.args ?? []) {
+        expect(
+          suspicious.test(arg.name),
+          `${ix.name}(${arg.name}) looks like a fee parameter`
+        ).to.equal(false);
+      }
+    }
+
+    // The only token destinations withdraw can reach are derived, not passed.
+    const withdraw = idl.instructions.find((i: any) => i.name === "withdraw");
+    const ownerAta = withdraw.accounts.find(
+      (a: any) => a.name === "owner_ata" || a.name === "ownerAta"
+    );
+    expect(ownerAta.pda, "the withdrawal destination must be derived").to.not.equal(undefined);
+  });
+
+  /**
    * The CPI surface, which is the most dangerous thing this program exposes.
    *
    * `execute_trade` hands caller-supplied instruction data and a caller-supplied

@@ -745,7 +745,53 @@ export default function Page() {
               </Panel>
             ) : null}
 
-            <Panel title="What is visible" index="08" note="Being precise about this is the product.">
+            <Panel title="Costs" index="08" note="No protocol fee. What you do pay, and to whom.">
+              <dl className="space-y-2 text-[12px] leading-relaxed">
+                <div>
+                  <dt className="font-medium">SilentEdge takes nothing</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    No instruction in the program can send value anywhere except
+                    back to you. That is structural, not a setting.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">You pay Solana</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Rent for the vault account, and a transaction fee for each
+                    deposit, withdrawal and strategy change. Fractions of a cent.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Someone pays to run it</dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Each evaluation and each trade costs a transaction plus a
+                    computation fee. Both are permissionless, so anyone can pay
+                    them — today that is us, and there is no mechanism that
+                    reimburses it.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-[var(--color-exposed)]">
+                    The swap is the real cost
+                  </dt>
+                  <dd className="text-[var(--color-ink-soft)]">
+                    Every trade pays spread and price impact, bounded only by
+                    your own max slippage. It is charged whether or not anyone
+                    calls it a fee. Set it as tight as your strategy tolerates.
+                  </dd>
+                </div>
+              </dl>
+              <a
+                className="mt-3 inline-block text-[11px] underline underline-offset-2"
+                href="https://github.com/Anshv784/silentedge/blob/main/FEES.md"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Full breakdown
+              </a>
+            </Panel>
+
+            <Panel title="What is visible" index="09" note="Being precise about this is the product.">
               <dl className="space-y-2.5 text-[12px] leading-relaxed">
                 <div>
                   <dt className="font-medium">Public, on chain</dt>
