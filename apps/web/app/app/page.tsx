@@ -327,11 +327,11 @@ export default function Page() {
             </p>
           </div>
           <div className="flex items-center gap-4">
-            <a
-              href="/app/market"
-              className="text-[13px] underline-offset-4 hover:underline"
-            >
+            <a href="/app/market" className="text-[13px] underline-offset-4 hover:underline">
               Market
+            </a>
+            <a href="/app/backtest" className="text-[13px] underline-offset-4 hover:underline">
+              Backtest
             </a>
             <WalletButton />
           </div>
