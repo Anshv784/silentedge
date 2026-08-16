@@ -65,7 +65,9 @@ pub mod vault {
         vault_config.bump = ctx.bumps.vault_config;
         vault_config.nonce = 0;
         vault_config.last_trade_ts = 0;
-        vault_config.reserved = [0u8; 62];
+        vault_config.listed = false;
+        vault_config.name = [0u8; 32];
+        vault_config.reserved = [0u8; 29];
 
         emit!(VaultInitialized {
             vault: vault_config.key(),
@@ -105,6 +107,85 @@ pub mod vault {
         emit!(LimitsUpdated {
             vault: vault.key(),
             nonce: vault.nonce,
+        });
+        Ok(())
+    }
+
+    /// List or unlist this vault in public discovery. Owner only.
+    ///
+    /// Listing changes what is *findable*, never what is readable. Everything a
+    /// listing surfaces — balances, limits, trade history — was already public
+    /// on chain; the encrypted strategy stays encrypted, because no instruction
+    /// in this program can export it.
+    ///
+    /// Deliberately not gated on having a strategy or a balance: an owner may
+    /// want to unlist instantly, and adding conditions to that is adding ways
+    /// for it to fail when it matters.
+    pub fn set_listing(ctx: Context<SetListing>, listed: bool, name: [u8; 32]) -> Result<()> {
+        let vault = &mut ctx.accounts.vault_config;
+        vault.listed = listed;
+        vault.name = name;
+
+        emit!(ListingChanged {
+            vault: vault.key(),
+            listed,
+        });
+        Ok(())
+    }
+
+    /// Follow a listed vault by copying its encrypted strategy into your own.
+    ///
+    /// # Why copying the ciphertext is safe
+    ///
+    /// `Enc<Mxe, Strategy>` is encrypted to the *cluster*, not to a person. The
+    /// follower ends up holding bytes they cannot decrypt, and which were
+    /// already published on the leader's account — copying them discloses
+    /// nothing that was not already on chain. The cluster can evaluate them
+    /// wherever they sit, so the follower's vault becomes evaluable without
+    /// anyone learning a threshold.
+    ///
+    /// # What the follower keeps
+    ///
+    /// Their own limits, their own balances, their own vault. The copied
+    /// strategy decides the *side*; `size_bps`, `max_trade_bps`, the cooldown
+    /// and the slippage floor are all read from the follower's own config at
+    /// evaluation and execution. Following someone does not adopt their risk
+    /// appetite, and cannot be used to route around your own limits.
+    ///
+    /// Requires the leader to be listed. Listing is the owner's explicit,
+    /// revocable statement that the vault is public; without it this would let
+    /// anyone copy a strategy from a vault that never offered one.
+    pub fn copy_strategy(ctx: Context<CopyStrategy>) -> Result<()> {
+        let leader = &ctx.accounts.leader_strategy;
+        require!(
+            ctx.accounts.leader_vault.listed,
+            VaultError::VaultNotListed
+        );
+        require!(
+            ctx.accounts.vault_config.key() != ctx.accounts.leader_vault.key(),
+            VaultError::CannotFollowSelf
+        );
+        // Only a converted strategy is evaluable; copying an unconverted one
+        // would produce a follower vault that silently never trades.
+        require!(leader.mxe_version > 0, VaultError::StrategyNotConverted);
+        require!(
+            ctx.accounts.vault_config.status != VaultStatus::Stopped,
+            VaultError::VaultStopped
+        );
+
+        let follower = &mut ctx.accounts.strategy_state;
+        follower.vault = ctx.accounts.vault_config.key();
+        follower.mxe_ciphertexts = leader.mxe_ciphertexts;
+        follower.mxe_nonce = leader.mxe_nonce;
+        follower.version = follower.version.checked_add(1).ok_or(VaultError::Overflow)?;
+        follower.mxe_version = follower.mxe_version.checked_add(1).ok_or(VaultError::Overflow)?;
+        follower.bump = ctx.bumps.strategy_state;
+        follower.follows = ctx.accounts.leader_vault.key();
+
+        emit!(StrategyCopied {
+            vault: follower.vault,
+            leader: ctx.accounts.leader_vault.key(),
+            version: follower.mxe_version,
         });
         Ok(())
     }
@@ -212,7 +293,8 @@ pub mod vault {
         strategy.encryption_pubkey = encryption_pubkey;
         strategy.version = strategy.version.checked_add(1).ok_or(VaultError::Overflow)?;
         strategy.bump = ctx.bumps.strategy_state;
-        strategy.reserved = [0u8; 32];
+        strategy.follows = Pubkey::default();
+        strategy.reserved = [0u8; 0];
 
         // Deliberately carries no ciphertext: an event is a public log, and
         // there is no reason to publish the payload twice.
@@ -752,6 +834,56 @@ pub struct InitializeVault<'info> {
 }
 
 #[derive(Accounts)]
+pub struct CopyStrategy<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    /// The follower's vault. Seeded by the signer, so this can only ever write
+    /// into a vault the caller owns.
+    #[account(
+        seeds = [VAULT_SEED, owner.key().as_ref()],
+        bump = vault_config.bump,
+        has_one = owner,
+    )]
+    pub vault_config: Box<Account<'info, VaultConfig>>,
+
+    #[account(
+        init_if_needed,
+        payer = owner,
+        space = 8 + StrategyState::INIT_SPACE,
+        seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
+        bump,
+    )]
+    pub strategy_state: Box<Account<'info, StrategyState>>,
+
+    /// The vault being followed. Read only — nothing here can modify it.
+    pub leader_vault: Box<Account<'info, VaultConfig>>,
+
+    /// The leader's strategy, tied to the leader's vault by its seeds so a
+    /// caller cannot pair one vault's listing with another vault's strategy.
+    #[account(
+        seeds = [STRATEGY_SEED, leader_vault.key().as_ref()],
+        bump = leader_strategy.bump,
+    )]
+    pub leader_strategy: Box<Account<'info, StrategyState>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetListing<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VAULT_SEED, owner.key().as_ref()],
+        bump = vault_config.bump,
+        has_one = owner,
+    )]
+    pub vault_config: Account<'info, VaultConfig>,
+}
+
+#[derive(Accounts)]
 pub struct UpdateLimits<'info> {
     pub owner: Signer<'info>,
 
@@ -1227,6 +1359,19 @@ pub struct StatusChanged {
     pub vault: Pubkey,
     pub status: VaultStatus,
     pub authority: Pubkey,
+}
+
+#[event]
+pub struct StrategyCopied {
+    pub vault: Pubkey,
+    pub leader: Pubkey,
+    pub version: u32,
+}
+
+#[event]
+pub struct ListingChanged {
+    pub vault: Pubkey,
+    pub listed: bool,
 }
 
 #[event]

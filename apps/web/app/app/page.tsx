@@ -35,7 +35,7 @@ import {
   vaultValueInQuote,
   type Activity,
 } from "@/lib/activity";
-import { readLimits, updateLimits } from "@/lib/vault-program";
+import { readLimits, updateLimits, readListing, setListing } from "@/lib/vault-program";
 
 const PYTH_SOL_USD = new PublicKey(
   process.env.NEXT_PUBLIC_PYTH_SOL_USD ??
@@ -83,6 +83,8 @@ export default function Page() {
    * execution, after an MPC evaluation had already been paid for.
    */
   const sizeCap = limits?.maxTradeBps ?? 1_000;
+  const [listing, setListingState] = useState<{ listed: boolean; name: string } | null>(null);
+  const [listingBusy, setListingBusy] = useState(false);
   const [editingLimits, setEditingLimits] = useState(false);
   const [limitsBusy, setLimitsBusy] = useState(false);
 
@@ -125,15 +127,17 @@ export default function Page() {
     if (!program || !publicKey || !v.vaultAddress) return;
     let alive = true;
     const load = async () => {
-      const [a, l, o] = await Promise.all([
+      const [a, l, o, li] = await Promise.all([
         readActivity(connection, v.vaultAddress!).catch(() => [] as Activity[]),
         readLimits(program, publicKey).catch(() => null),
         readOraclePrice(connection, PYTH_SOL_USD).catch(() => null),
+        readListing(program, publicKey).catch(() => null),
       ]);
       if (!alive) return;
       setActivity(a);
       setLimits(l);
       setOracle(o);
+      setListingState(li);
     };
     load();
     const id = setInterval(load, 20_000);
@@ -159,6 +163,26 @@ export default function Page() {
       clearInterval(id);
     };
   }, [program, publicKey, receipts.length]);
+
+  async function toggleListing(name: string) {
+    if (!program || !publicKey || !listing) return;
+    setListingBusy(true);
+    setEncryptError(null);
+    try {
+      const next = !listing.listed;
+      const signature = await setListing(program, publicKey, next, next ? name : "");
+      setListingState({ listed: next, name: next ? name : "" });
+      recordAndRefresh({
+        signature,
+        action: next ? "List vault publicly" : "Unlist vault",
+        at: Date.now(),
+      });
+    } catch (e) {
+      setEncryptError(readableError(e));
+    } finally {
+      setListingBusy(false);
+    }
+  }
 
   /**
    * Pause, resume, or stop. Owner-only, and deliberately unable to trap funds:
@@ -332,6 +356,9 @@ export default function Page() {
             </a>
             <a href="/app/backtest" className="text-[13px] underline-offset-4 hover:underline">
               Backtest
+            </a>
+            <a href="/app/discover" className="text-[13px] underline-offset-4 hover:underline">
+              Discover
             </a>
             <WalletButton />
           </div>
@@ -666,7 +693,59 @@ export default function Page() {
               </Panel>
             ) : null}
 
-            <Panel title="What is visible" index="07" note="Being precise about this is the product.">
+            {v.vaultAddress && listing ? (
+              <Panel title="Discovery" index="07" note="Off by default. Listing changes what is findable, not what is readable.">
+                {listing.listed ? (
+                  <>
+                    <p className="text-[12px] leading-relaxed">
+                      Listed as <strong>{listing.name || "Unnamed vault"}</strong>.
+                      Anyone can find this vault and see its balances, risk
+                      limits and executed trades — all of which were already
+                      public on chain. Your strategy stays encrypted.
+                    </p>
+                    <button
+                      onClick={() => toggleListing("")}
+                      disabled={listingBusy}
+                      className="mt-3 border border-[var(--color-rule)] px-3 py-1.5 text-[12px] disabled:opacity-40"
+                    >
+                      {listingBusy ? "Working…" : "Unlist"}
+                    </button>
+                  </>
+                ) : (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const f = new FormData(e.currentTarget as HTMLFormElement);
+                      toggleListing(String(f.get("name") ?? "").trim());
+                    }}
+                  >
+                    <p className="text-[12px] leading-relaxed text-[var(--color-ink-soft)]">
+                      Not listed. Listing makes this vault appear in Discover. It
+                      publishes nothing new — balances, limits and trades are
+                      already readable by anyone — and it cannot expose your
+                      strategy, because no instruction in the program can.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <input
+                        name="name"
+                        maxLength={32}
+                        placeholder="Public name (optional)"
+                        className="min-w-[180px] flex-1 border border-[var(--color-rule)] bg-[var(--color-paper)] px-2 py-1.5 text-[12px]"
+                      />
+                      <button
+                        type="submit"
+                        disabled={listingBusy}
+                        className="border border-[var(--color-signal)] bg-[var(--color-signal)] px-3 py-1.5 text-[12px] text-white disabled:opacity-40"
+                      >
+                        {listingBusy ? "Working…" : "List publicly"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </Panel>
+            ) : null}
+
+            <Panel title="What is visible" index="08" note="Being precise about this is the product.">
               <dl className="space-y-2.5 text-[12px] leading-relaxed">
                 <div>
                   <dt className="font-medium">Public, on chain</dt>

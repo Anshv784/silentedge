@@ -99,4 +99,11 @@ pub enum VaultError {
 
     #[msg("Swap program is not the pinned aggregator")]
     SwapProgramNotAllowed,
+
+    // --- following ---
+    #[msg("That vault is not listed for public discovery")]
+    VaultNotListed,
+
+    #[msg("A vault cannot follow itself")]
+    CannotFollowSelf,
 }

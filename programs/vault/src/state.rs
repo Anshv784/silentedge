@@ -125,15 +125,35 @@ pub struct VaultConfig {
     /// without a special case.
     pub last_trade_ts: i64,
 
+    /// Whether this vault appears in public discovery.
+    ///
+    /// Carved from the reserve rather than appended, so every existing vault
+    /// keeps the offset of every field it already had. An account created
+    /// before this field existed reads it out of zeroed reserve bytes, which
+    /// decodes as `false` — the correct default. That is the reserve working as
+    /// intended, and the reason it was added.
+    ///
+    /// Listing publishes nothing that was not already public: the vault, its
+    /// balances, its limits and its trades are all readable by anyone. It only
+    /// makes the vault findable, and it never exposes the encrypted strategy —
+    /// no instruction can.
+    pub listed: bool,
+
+    /// A display name for a listed vault. UTF-8, zero-padded, may be empty.
+    ///
+    /// Fixed width because Anchor accounts are fixed size. The program does not
+    /// interpret it, and a client must treat it as untrusted text from a
+    /// stranger — it is chosen by the vault's owner, not verified by anyone.
+    pub name: [u8; 32],
+
     /// Space for fields this struct does not have yet. Do not read or write it.
     ///
-    /// Adding `last_trade_ts` above made every already-created vault fail to
-    /// load with `AccountDidNotDeserialize` (3003) — the account was allocated
-    /// at the old `INIT_SPACE` and borsh cannot fill the missing bytes. That is
-    /// survivable on devnet, where the stranded vaults hold a test mint. It
-    /// would not be survivable on mainnet, because `withdraw` takes
-    /// `Account<'info, VaultConfig>` and would be stranded with everything else
-    /// — the one path that must keep working no matter what.
+    /// Adding `last_trade_ts` made every already-created vault fail to load with
+    /// `AccountDidNotDeserialize` (3003): the account was allocated at the old
+    /// `INIT_SPACE` and borsh cannot fill the missing bytes. Survivable on
+    /// devnet, where the stranded vaults held a test mint. Not survivable on
+    /// mainnet, because `withdraw` takes `Account<'info, VaultConfig>` and would
+    /// be stranded with everything else — the one path that must keep working.
     ///
     /// The rule, stated precisely, because the loose version is wrong:
     ///
@@ -149,7 +169,7 @@ pub struct VaultConfig {
     ///
     /// Borsh is positional. Preserving the byte count preserves nothing on its
     /// own; preserving the *offset of every existing field* is the requirement.
-    pub reserved: [u8; 62],
+    pub reserved: [u8; 29],
 }
 
 impl VaultConfig {
@@ -181,11 +201,18 @@ pub struct StrategyState {
     /// that produced them, so replacing a strategy invalidates work in flight.
     pub version: u32,
     pub bump: u8,
+    /// The vault this strategy was copied from, or the default pubkey if it is
+    /// the owner's own. Carved from this struct's reserve, so existing strategy
+    /// accounts keep every field offset they already had.
+    ///
+    /// Informational: nothing in the program branches on it. It exists so a
+    /// follower can see, and prove, where their rules came from.
+    pub follows: Pubkey,
     /// Same rule as `VaultConfig.reserved`: carve future fields out of this,
     /// never append. Added while this struct was being resized anyway (the
     /// ciphertext array went 4 -> 3), so it costs nothing now and stops the
     /// next change stranding every strategy account.
-    pub reserved: [u8; 32],
+    pub reserved: [u8; 0],
 
     /// The same strategy re-encrypted to the MXE cluster.
     ///

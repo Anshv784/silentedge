@@ -216,6 +216,74 @@ export async function readMxeVersion(
   return s ? Number(s.mxeVersion) : 0;
 }
 
+/**
+ * List or unlist this vault in public discovery. Owner only.
+ *
+ * Changes what is findable, never what is readable: balances, limits and trades
+ * were already public, and the encrypted strategy stays encrypted because no
+ * instruction can export it.
+ */
+export async function setListing(
+  program: Program,
+  owner: PublicKey,
+  listed: boolean,
+  name: string
+): Promise<string> {
+  const bytes = Buffer.alloc(32);
+  Buffer.from(name.slice(0, 32), "utf8").copy(bytes);
+  return (program.methods as any)
+    .setListing(listed, Array.from(bytes))
+    .accountsPartial({ owner, vaultConfig: deriveVaultPda(owner) })
+    .rpc();
+}
+
+/** Whether this vault is currently discoverable, and under what name. */
+export async function readListing(
+  program: Program,
+  owner: PublicKey
+): Promise<{ listed: boolean; name: string } | null> {
+  const v: any = await (program.account as any).vaultConfig
+    .fetch(deriveVaultPda(owner))
+    .catch(() => null);
+  if (!v) return null;
+  const buf = Buffer.from(v.name as number[]);
+  const end = buf.indexOf(0);
+  return {
+    listed: Boolean(v.listed),
+    name: buf.subarray(0, end === -1 ? buf.length : end).toString("utf8"),
+  };
+}
+
+/**
+ * Follow a listed vault by copying its encrypted strategy into your own.
+ *
+ * You receive bytes you cannot read: the strategy is encrypted to the MPC
+ * cluster, not to a person, and those bytes were already public on the leader's
+ * account. Your own limits, balances and vault stay yours — the copied rules
+ * decide the side, your config decides the size and the risk.
+ */
+export async function followVault(
+  program: Program,
+  owner: PublicKey,
+  leaderVault: PublicKey
+): Promise<string> {
+  const vault = deriveVaultPda(owner);
+  return (program.methods as any)
+    .copyStrategy()
+    .accountsPartial({
+      owner,
+      vaultConfig: vault,
+      strategyState: deriveStrategyPda(vault),
+      leaderVault,
+      leaderStrategy: PublicKey.findProgramAddressSync(
+        [Buffer.from("strategy"), leaderVault.toBuffer()],
+        VAULT_PROGRAM_ID
+      )[0],
+      systemProgram: SystemProgram.programId,
+    })
+    .rpc();
+}
+
 /** Owner-only circuit breaker. `withdraw` keeps working in every status. */
 export async function setStatus(
   program: Program,

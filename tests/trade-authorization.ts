@@ -314,6 +314,198 @@ describe("vault — trade authorization", () => {
   });
 
   /**
+   * Listing is a discovery flag, not a disclosure.
+   *
+   * It must be owner-only, and it must not create any path to strategy
+   * plaintext — the marketplace shows things that were already public.
+   */
+  it("lets only the owner list a vault, and reveals nothing new by doing so", async () => {
+    const { owner, vault } = await setupVault();
+    const name = Array.from(Buffer.alloc(32));
+    Buffer.from("public vault").copy(Buffer.from(name as any));
+
+    const stranger = await newFundedKeypair();
+    try {
+      await (program.methods as any)
+        .setListing(true, name)
+        .accountsPartial({ owner: stranger.publicKey, vaultConfig: vault })
+        .signers([stranger])
+        .rpc();
+      assert.fail("a stranger listed someone else's vault");
+    } catch (e) {
+      expect(e.toString()).to.match(/ConstraintSeeds|AccountNotInitialized|has_one/i);
+    }
+
+    await (program.methods as any)
+      .setListing(true, name)
+      .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+    const v: any = await program.account.vaultConfig.fetch(vault);
+    expect(v.listed).to.equal(true);
+
+    // Unlisting must always work: it is the control an owner reaches for when
+    // they want out, so it cannot depend on any other condition.
+    await (program.methods as any)
+      .setListing(false, Array.from(Buffer.alloc(32)))
+      .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+    expect((await program.account.vaultConfig.fetch(vault) as any).listed).to.equal(false);
+
+    // No instruction anywhere exports strategy plaintext.
+    const idl: any = program.idl;
+    for (const ix of idl.instructions) {
+      for (const acc of ix.accounts) {
+        if (acc.name === "strategyState") {
+          expect(
+            ix.name,
+            `${ix.name} touches strategy_state — confirm it cannot export it`
+          ).to.be.oneOf([
+            "submit_strategy", "submitStrategy",
+            "convert_strategy", "convertStrategy",
+            "evaluate_strategy", "evaluateStrategy",
+            "store_strategy_v2_callback", "storeStrategyV2Callback",
+            "evaluate_strategy_v3_callback", "evaluateStrategyV3Callback",
+            "execute_trade", "executeTrade",
+            // copy_strategy moves Enc<Mxe> ciphertext between two accounts that
+            // are both already public. It cannot decrypt: the key is the
+            // cluster's, and no instruction here holds it. Added deliberately
+            // after checking that, not to make the test pass.
+            "copy_strategy", "copyStrategy",
+          ]);
+        }
+      }
+    }
+  });
+
+  /**
+   * The account-layout rule, asserted rather than trusted.
+   *
+   * `listed` and `name` were carved out of `reserved`, so VaultConfig is the
+   * same size it was and every existing field kept its offset. Getting this
+   * wrong strands every vault — including `withdraw`, which is the one path
+   * that must never break.
+   */
+  it("keeps VaultConfig the same size when fields are carved from the reserve", async () => {
+    const { vault } = await setupVault();
+    const info = await connection.getAccountInfo(vault);
+    // 8 discriminator + 3 pubkeys + RiskLimits(20) + status + bump + nonce
+    // + last_trade_ts + listed + name(32) + reserved(29)
+    expect(info!.data.length).to.equal(8 + 96 + 20 + 1 + 1 + 8 + 8 + 1 + 32 + 29);
+  });
+
+  // ------------------------------------------------------------- following
+
+  const listVault = (owner: Keypair, vault: PublicKey, name = "leader") => {
+    const bytes = Buffer.alloc(32);
+    Buffer.from(name).copy(bytes);
+    return (program.methods as any)
+      .setListing(true, Array.from(bytes))
+      .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+  };
+
+  const copyFrom = (
+    follower: Keypair,
+    followerVault: PublicKey,
+    leaderVault: PublicKey
+  ) =>
+    (program.methods as any)
+      .copyStrategy()
+      .accountsPartial({
+        owner: follower.publicKey,
+        vaultConfig: followerVault,
+        strategyState: strategyPda(followerVault),
+        leaderVault,
+        leaderStrategy: strategyPda(leaderVault),
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([follower]);
+
+  /**
+   * Following copies a ciphertext the follower cannot read.
+   *
+   * `Enc<Mxe, Strategy>` is encrypted to the cluster, not to a person, and the
+   * bytes were already public on the leader's account — so this discloses
+   * nothing new. What must hold is that it only works on a *listed* vault, and
+   * that the follower's own limits keep applying.
+   */
+  it("refuses to copy from a vault that has not been listed", async () => {
+    const leader = await setupVault();
+    const follower = await setupVault();
+    try {
+      await copyFrom(follower.owner, follower.vault, leader.vault).rpc();
+      assert.fail("copied from an unlisted vault");
+    } catch (e) {
+      // Unlisted, and also unconverted — either refusal is correct here.
+      expect(e.toString()).to.match(/VaultNotListed|StrategyNotConverted|AccountNotInitialized/);
+    }
+  });
+
+  it("refuses to copy a strategy the cluster has never converted", async () => {
+    const leader = await setupVault();
+    await listVault(leader.owner, leader.vault);
+
+    // A submitted-but-unconverted strategy has mxe_version 0 and is inert.
+    await program.methods
+      .submitStrategy(
+        [Array(32).fill(1), Array(32).fill(2), Array(32).fill(3)],
+        new BN(1),
+        Array(32).fill(7)
+      )
+      .accountsPartial({
+        owner: leader.owner.publicKey,
+        vaultConfig: leader.vault,
+        strategyState: strategyPda(leader.vault),
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([leader.owner])
+      .rpc();
+
+    const follower = await setupVault();
+    try {
+      await copyFrom(follower.owner, follower.vault, leader.vault).rpc();
+      assert.fail("copied an unconverted strategy");
+    } catch (e) {
+      expect(e.toString()).to.match(/StrategyNotConverted/);
+    }
+  });
+
+  it("refuses to let a vault follow itself", async () => {
+    const v = await setupVault();
+    await listVault(v.owner, v.vault);
+    try {
+      await copyFrom(v.owner, v.vault, v.vault).rpc();
+      assert.fail("a vault followed itself");
+    } catch (e) {
+      expect(e.toString()).to.match(/CannotFollowSelf|StrategyNotConverted|AccountNotInitialized/);
+    }
+  });
+
+  /**
+   * The account that matters: a follower writes only into their own vault's
+   * strategy PDA, seeded by their own signer. There is no argument that could
+   * redirect the write into someone else's.
+   */
+  it("gives following no way to write into another vault", async () => {
+    const idl: any = program.idl;
+    const ix = idl.instructions.find(
+      (i: any) => i.name === "copy_strategy" || i.name === "copyStrategy"
+    );
+    expect(ix, "copy_strategy must exist").to.not.equal(undefined);
+    expect(ix.args, "following takes no arguments to redirect").to.deep.equal([]);
+
+    const follower = ix.accounts.find((a: any) => a.name === "strategy_state" || a.name === "strategyState");
+    expect(follower.writable, "only the follower's own strategy is written").to.equal(true);
+    for (const name of ["leader_vault", "leaderVault", "leader_strategy", "leaderStrategy"]) {
+      const acc = ix.accounts.find((a: any) => a.name === name);
+      if (acc) expect(acc.writable ?? false, `${name} must be read-only`).to.equal(false);
+    }
+  });
+
+  /**
    * The CPI surface, which is the most dangerous thing this program exposes.
    *
    * `execute_trade` hands caller-supplied instruction data and a caller-supplied
