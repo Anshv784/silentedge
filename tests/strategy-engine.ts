@@ -45,9 +45,10 @@ const fmt = (v: bigint) => `$${(Number(v) / 1e6).toFixed(2)}`;
 const NEVER_BUY = 0n;
 const NEVER_SELL = 18_446_744_073_709_551_615n; // u64::MAX
 
-const SIZE_BPS = 1_000n; // 10%
+/** Public vault setting now, not an encrypted field — THREAT_MODEL T-38. */
+const SIZE_BPS = 1_000; // 10%
 const VAULT_VALUE = 2_500_000_000n; // 2,500 USDC in base units
-const EXPECTED_SIZED = (VAULT_VALUE * SIZE_BPS) / 10_000n;
+const EXPECTED_SIZED = (VAULT_VALUE * BigInt(SIZE_BPS)) / 10_000n;
 
 const STORED_STRATEGY_SEED = Buffer.from("stored_strategy");
 
@@ -189,7 +190,7 @@ describe("arcium — confidential strategy evaluation", function () {
 
   it("buys when the live price is below the entry threshold", async () => {
     const p = await livePrice();
-    await storeStrategy([p + usd(10), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    await storeStrategy([p + usd(10), NEVER_SELL, NEVER_BUY]);
     const r = await evaluate();
     console.log(`      entry ${fmt(p + usd(10))}, live ${fmt(p)} -> action ${r.action}`);
     expect(r.action).to.equal(BUY);
@@ -198,7 +199,7 @@ describe("arcium — confidential strategy evaluation", function () {
 
   it("holds when the live price sits between the thresholds", async () => {
     const p = await livePrice();
-    await storeStrategy([p - usd(10), p + usd(10), p - usd(20), SIZE_BPS]);
+    await storeStrategy([p - usd(10), p + usd(10), p - usd(20)]);
     const r = await evaluate();
     console.log(`      band ${fmt(p - usd(10))}..${fmt(p + usd(10))} -> action ${r.action}`);
     expect(r.action).to.equal(HOLD);
@@ -207,7 +208,7 @@ describe("arcium — confidential strategy evaluation", function () {
 
   it("sells when the live price is above the exit threshold", async () => {
     const p = await livePrice();
-    await storeStrategy([NEVER_BUY, p - usd(10), NEVER_BUY, SIZE_BPS]);
+    await storeStrategy([NEVER_BUY, p - usd(10), NEVER_BUY]);
     const r = await evaluate();
     console.log(`      exit ${fmt(p - usd(10))}, live ${fmt(p)} -> action ${r.action}`);
     expect(r.action).to.equal(SELL);
@@ -217,7 +218,7 @@ describe("arcium — confidential strategy evaluation", function () {
   /** A stop is an exit, not an entry, even though it is also below the buy price. */
   it("stops out below the stop threshold, exiting the whole position", async () => {
     const p = await livePrice();
-    await storeStrategy([p + usd(10), NEVER_SELL, p + usd(5), SIZE_BPS]);
+    await storeStrategy([p + usd(10), NEVER_SELL, p + usd(5)]);
     const r = await evaluate();
     console.log(`      stop ${fmt(p + usd(5))}, live ${fmt(p)} -> action ${r.action}`);
     expect(r.action).to.equal(SELL);
@@ -271,7 +272,7 @@ describe("arcium — confidential strategy evaluation", function () {
   it("puts no threshold on chain", async () => {
     const p = await livePrice();
     const entry = p + usd(10);
-    await storeStrategy([entry, NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    await storeStrategy([entry, NEVER_SELL, NEVER_BUY]);
     const r = await evaluate();
 
     const tx = await provider.connection.getTransaction(r.sig, {

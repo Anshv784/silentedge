@@ -10,13 +10,18 @@ use arcis::*;
 mod circuits {
     use arcis::*;
 
-    /// The whole strategy: four fixed-width integers.
+    /// The whole strategy: three fixed-width integers.
     ///
     /// Fixed shape is not a style choice. Arcis compiles to circuits whose
     /// shape is known at compile time — no `Vec`, no variable-length loops — so
     /// the editable rules in the UI have to collapse into exactly this before
-    /// they can ever be evaluated. Prices are fixed-point with 6 decimals;
-    /// `size_bps` is basis points of vault value.
+    /// they can ever be evaluated. Prices are fixed-point with 6 decimals.
+    ///
+    /// `size_bps` used to be a fourth field here. It is now a public vault
+    /// setting, because the traded amount and the vault balance are both public
+    /// in the same transaction and their ratio recovers it exactly — one trade
+    /// was enough. Encrypting it spent gates to protect nothing while telling
+    /// the user it was protected. See THREAT_MODEL T-38.
     ///
     /// A rule the user switched off is stored as a value whose comparison can
     /// never be true (0 for buy, `u64::MAX` for sell) rather than being absent.
@@ -26,7 +31,6 @@ mod circuits {
         entry_below: u64,
         exit_above: u64,
         stop_below: u64,
-        size_bps: u64,
     }
 
     /// The smallest computation that proves the pipeline is real: `x + 10`.
@@ -58,7 +62,7 @@ mod circuits {
     /// The plaintext exists only inside the MPC, secret-shared across nodes,
     /// for the duration of this computation.
     #[instruction]
-    pub fn store_strategy(input: Enc<Shared, Strategy>) -> Enc<Mxe, Strategy> {
+    pub fn store_strategy_v2(input: Enc<Shared, Strategy>) -> Enc<Mxe, Strategy> {
         let strategy = input.to_arcis();
         Mxe::get().from_arcis(strategy)
     }
@@ -79,7 +83,7 @@ mod circuits {
     ///
     /// # What is deliberately not hidden
     ///
-    /// `price`, `quote_value` and `base_value` are plaintext parameters. Every
+    /// `price`, `quote_value`, `base_value` and `size_bps` are plaintext. Every
     /// Arx node sees them, and they are visible on chain in the queueing
     /// transaction. That is correct — the price is public information and both
     /// vault balances are public token accounts. Encrypting them would cost
@@ -101,11 +105,12 @@ mod circuits {
     /// Arcis rejects revealing inside a non-constant branch, and that rule
     /// exists precisely to stop the control flow leaking.
     #[instruction]
-    pub fn evaluate_strategy_v2(
+    pub fn evaluate_strategy_v3(
         strategy_ctxt: Enc<Mxe, Strategy>,
         price: u64,
         quote_value: u64,
         base_value: u64,
+        size_bps: u64,
     ) -> (u8, u64) {
         let s = strategy_ctxt.to_arcis();
 
@@ -132,8 +137,8 @@ mod circuits {
         //
         // Widened to u128 for the multiply: size_bps can be 10_000, which
         // overflows u64 for large balances.
-        let buy_size = ((quote_value as u128 * s.size_bps as u128) / 10_000u128) as u64;
-        let sell_size = ((base_value as u128 * s.size_bps as u128) / 10_000u128) as u64;
+        let buy_size = ((quote_value as u128 * size_bps as u128) / 10_000u128) as u64;
+        let sell_size = ((base_value as u128 * size_bps as u128) / 10_000u128) as u64;
 
         // A stop exits the whole position; anything else trades the configured
         // fraction. HOLD trades nothing.

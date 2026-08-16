@@ -106,7 +106,7 @@ describe("vault — swap execution against forked mainnet", function () {
         .initializeVault({
           maxTradeBps: 1_000, maxSlippageBps: 100, dailyLossLimitBps: 500,
           cooldownSeconds: 0, maxOracleStalenessSec: 30, maxConfBps: 100,
-          maxOracleDeviationBps: 200,
+          maxOracleDeviationBps: 200, sizeBps: 1_000,
         })
         .accountsPartial({
           owner: owner.publicKey, vaultConfig: vault,
@@ -126,7 +126,7 @@ describe("vault — swap execution against forked mainnet", function () {
     if (!(await connection.getAccountInfo(strategyPda))) {
       await program.methods
         .submitStrategy(
-          [Array(32).fill(1), Array(32).fill(2), Array(32).fill(3), Array(32).fill(4)],
+          [Array(32).fill(1), Array(32).fill(2), Array(32).fill(3)],
           new BN(1), Array(32).fill(7))
         .accountsPartial({
           owner: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
@@ -315,7 +315,7 @@ describe("vault — swap execution against forked mainnet", function () {
       .updateLimits({
         maxTradeBps: 1_000, maxSlippageBps: 100, dailyLossLimitBps: 500,
         cooldownSeconds, maxOracleStalenessSec: 30, maxConfBps: 100,
-        maxOracleDeviationBps: 200,
+        maxOracleDeviationBps: 200, sizeBps: 1_000,
       })
       .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
       .signers([owner])

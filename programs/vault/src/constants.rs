@@ -6,9 +6,10 @@ pub const VAULT_SEED: &[u8] = b"vault";
 /// Seed prefix for a vault's encrypted strategy.
 pub const STRATEGY_SEED: &[u8] = b"strategy";
 
-/// Encrypted scalars in a strategy: entry_below, exit_above, stop_below, size_bps.
+/// Encrypted scalars in a strategy: entry_below, exit_above, stop_below.
+/// `size_bps` is public vault config, not encrypted — see THREAT_MODEL T-38.
 /// Fixed because Arcis circuits are fixed-shape (RESEARCH.md §2.7).
-pub const STRATEGY_FIELDS: usize = 4;
+pub const STRATEGY_FIELDS: usize = 3;
 
 /// Seed prefix for a vault's pending trade authorization.
 pub const INTENT_SEED: &[u8] = b"intent";
@@ -95,6 +96,9 @@ pub const SIDE_SELL: u8 = 2;
 /// Decimals of the two mints, used to convert an oracle price into an expected
 /// output amount. wSOL is 9, USDC is 6.
 pub const BASE_DECIMALS_POW: u128 = 1_000_000_000;
+
+/// Ceiling on the strategy's trade size, as a share of the spendable balance.
+pub const MAX_SIZE_BPS_CEILING: u16 = 10_000;
 
 /// Basis-point denominator.
 pub const BPS_DENOMINATOR: u16 = 10_000;

@@ -50,6 +50,16 @@ pub struct RiskLimits {
     pub max_conf_bps: u16,
     /// Reject executions deviating from the oracle band by more than this.
     pub max_oracle_deviation_bps: u16,
+
+    /// Share of the spendable balance a triggered rule trades, in basis points.
+    ///
+    /// Public on purpose. It used to be the fourth field of the *encrypted*
+    /// strategy, which implied a secrecy it never had: the traded amount and
+    /// the vault balance are both public in the same transaction, so
+    /// `size_bps = amount * 10_000 / balance` recovers it exactly from a single
+    /// trade. See THREAT_MODEL T-38 and docs/what-is-private.md. Encrypting it
+    /// cost MPC gates to protect nothing, and told the user it was protected.
+    pub size_bps: u16,
 }
 
 impl RiskLimits {
@@ -72,6 +82,10 @@ impl RiskLimits {
         // cooldown of ~136 years.
         require!(
             self.cooldown_seconds <= MAX_COOLDOWN_SECONDS,
+            VaultError::InvalidRiskLimit
+        );
+        require!(
+            self.size_bps > 0 && self.size_bps <= MAX_SIZE_BPS_CEILING,
             VaultError::InvalidRiskLimit
         );
         require!(
@@ -121,9 +135,21 @@ pub struct VaultConfig {
     /// `Account<'info, VaultConfig>` and would be stranded with everything else
     /// — the one path that must keep working no matter what.
     ///
-    /// A future field must be carved *out of this reserve*, keeping the total
-    /// size identical, never appended after it. Appending strands every vault.
-    pub reserved: [u8; 64],
+    /// The rule, stated precisely, because the loose version is wrong:
+    ///
+    ///   a new field must be **appended immediately before this reserve** and
+    ///   the reserve shrunk by the same number of bytes.
+    ///
+    /// Equal total size is necessary and *not* sufficient. `size_bps` was added
+    /// to `RiskLimits`, which sits in the middle of this struct — same total
+    /// size, but every field after it shifted two bytes, so existing vaults
+    /// deserialized into garbage and failed with `ConstraintSeeds` (2006) on a
+    /// mis-read `bump`. A quieter failure than the `AccountDidNotDeserialize`
+    /// (3003) that a size change gives you, and the same outcome for funds.
+    ///
+    /// Borsh is positional. Preserving the byte count preserves nothing on its
+    /// own; preserving the *offset of every existing field* is the requirement.
+    pub reserved: [u8; 62],
 }
 
 impl VaultConfig {
@@ -135,7 +161,7 @@ impl VaultConfig {
 /// A vault's encrypted strategy.
 ///
 /// The program stores these bytes and never interprets them. It cannot: the
-/// plaintext is four integers encrypted under a secret shared between the
+/// plaintext is three integers encrypted under a secret shared between the
 /// submitter and the MXE cluster, and nothing on chain holds either half of
 /// that exchange. Storing opaque bytes is the point, not a limitation.
 ///
@@ -155,6 +181,11 @@ pub struct StrategyState {
     /// that produced them, so replacing a strategy invalidates work in flight.
     pub version: u32,
     pub bump: u8,
+    /// Same rule as `VaultConfig.reserved`: carve future fields out of this,
+    /// never append. Added while this struct was being resized anyway (the
+    /// ciphertext array went 4 -> 3), so it costs nothing now and stops the
+    /// next change stranding every strategy account.
+    pub reserved: [u8; 32],
 
     /// The same strategy re-encrypted to the MXE cluster.
     ///

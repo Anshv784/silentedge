@@ -36,6 +36,12 @@ const secretDraft = (): Strategy => ({
   sizeBps: 1_000,
 });
 
+/** What the ciphertext actually covers. `sizeBps` is public and not encrypted. */
+function encryptedPartOf(s: any) {
+  const { sizeBps, ...rest } = s;
+  return rest;
+}
+
 /** Stands in for the MXE cluster until a real one is deployed. */
 function fakeMxeKeypair() {
   const privateKey = x25519.utils.randomSecretKey();
@@ -47,7 +53,9 @@ describe("encryptStrategy", () => {
     const mxe = fakeMxeKeypair();
     const e = encryptStrategy(normalize(secretDraft(), MAX_SIZE_BPS), mxe.publicKey);
 
-    expect(e.ciphertexts).to.have.length(4);
+    // Three, not four. `sizeBps` left the encrypted struct because a single
+    // trade recovers it exactly from public data — THREAT_MODEL T-38.
+    expect(e.ciphertexts).to.have.length(3);
     for (const ct of e.ciphertexts) expect(ct).to.have.length(32);
     expect(e.nonce).to.have.length(16);
     expect(e.encryptionPublicKey).to.have.length(32);
@@ -60,7 +68,7 @@ describe("encryptStrategy", () => {
       encryptStrategy(normalized, mxe.publicKey),
       mxe.privateKey
     );
-    expect(decrypted).to.deep.equal(normalized);
+    expect(decrypted).to.deep.equal(encryptedPartOf(normalized));
   });
 
   /**
@@ -97,9 +105,11 @@ describe("encryptStrategy", () => {
     const user = await deriveEncryptionKeypair(async () => fakeSignature);
 
     const e = encryptStrategy(normalized, mxe.publicKey, user.privateKey);
-    expect(decryptStrategy(e, user.privateKey, mxe.publicKey)).to.deep.equal(normalized);
+    expect(decryptStrategy(e, user.privateKey, mxe.publicKey))
+      .to.deep.equal(encryptedPartOf(normalized));
     // The MXE side still works from the other direction.
-    expect(decryptStrategyWithMxeKey(e, mxe.privateKey)).to.deep.equal(normalized);
+    expect(decryptStrategyWithMxeKey(e, mxe.privateKey))
+      .to.deep.equal(encryptedPartOf(normalized));
   });
 
   it("derives the same key from the same signature", async () => {

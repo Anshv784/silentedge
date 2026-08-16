@@ -59,8 +59,17 @@ export const STRATEGY_FIELD_ORDER = [
   "entryBelow",
   "exitAbove",
   "stopBelow",
-  "sizeBps",
 ] as const;
+
+/**
+ * `sizeBps` is deliberately absent. It is a public vault setting, not an
+ * encrypted field: the traded amount and the vault balance are both public in
+ * the same transaction, so their ratio recovers it exactly from one trade.
+ * See THREAT_MODEL T-38.
+ */
+
+/** What the ciphertext actually covers — `sizeBps` is public and not in here. */
+export type EncryptedFields = Omit<NormalizedStrategy, "sizeBps">;
 
 export type EncryptedStrategy = {
   /** One 32-byte ciphertext per scalar, in circuit field order. */
@@ -105,7 +114,6 @@ export function encryptStrategy(
     strategy.entryBelow,
     strategy.exitAbove,
     strategy.stopBelow,
-    BigInt(strategy.sizeBps),
   ];
 
   // The SDK works in number[][]; expose Uint8Array so callers deal in bytes.
@@ -121,7 +129,7 @@ export function decryptStrategy(
   encrypted: EncryptedStrategy,
   userPrivateKey: Uint8Array,
   mxePublicKey: Uint8Array
-): NormalizedStrategy {
+): EncryptedFields {
   const sharedSecret = x25519.getSharedSecret(userPrivateKey, mxePublicKey);
   const values = new RescueCipher(sharedSecret).decrypt(
     encrypted.ciphertexts.map((c) => Array.from(c)),
@@ -131,7 +139,6 @@ export function decryptStrategy(
     entryBelow: values[0],
     exitAbove: values[1],
     stopBelow: values[2],
-    sizeBps: Number(values[3]),
   };
 }
 
@@ -144,7 +151,7 @@ export function decryptStrategy(
 export function decryptStrategyWithMxeKey(
   encrypted: EncryptedStrategy,
   mxePrivateKey: Uint8Array
-): NormalizedStrategy {
+): EncryptedFields {
   const sharedSecret = x25519.getSharedSecret(
     mxePrivateKey,
     encrypted.encryptionPublicKey
@@ -158,7 +165,6 @@ export function decryptStrategyWithMxeKey(
     entryBelow: values[0],
     exitAbove: values[1],
     stopBelow: values[2],
-    sizeBps: Number(values[3]),
   };
 }
 

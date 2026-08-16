@@ -41,7 +41,7 @@ const validLimits = () => ({
   cooldownSeconds: 60,
   maxOracleStalenessSec: 30,
   maxConfBps: 100,
-  maxOracleDeviationBps: 200,
+  maxOracleDeviationBps: 200, sizeBps: 1_000,
 });
 
 describe("vault — custody", () => {
@@ -407,7 +407,7 @@ describe("vault — custody", () => {
     expect(Buffer.from(state.encryptionPubkey)).to.deep.equal(
       Buffer.from(e.encryptionPublicKey)
     );
-    expect(state.ciphertexts).to.have.length(4);
+    expect(state.ciphertexts).to.have.length(3); // three encrypted scalars; size_bps is public (T-38)
   });
 
   it("bumps the version when a strategy is replaced", async () => {
@@ -585,7 +585,10 @@ describe("vault — custody", () => {
    * `state.rs` would otherwise fail. This pins it.
    */
   it("vault status sits at the byte offset the web app reads", async () => {
-    const STATUS_OFFSET = 8 + 32 + 32 + 32 + 18; // discriminator + 3 pubkeys + RiskLimits
+    // discriminator + 3 pubkeys + RiskLimits (20 bytes since size_bps joined it).
+    // This test earns its keep: it failed the moment RiskLimits grew, which is
+    // exactly when apps/web/lib/use-vault.ts started reading the wrong byte.
+    const STATUS_OFFSET = 8 + 32 + 32 + 32 + 20;
     const { owner, vault } = await setupVault(0);
 
     const active = await connection.getAccountInfo(vault);

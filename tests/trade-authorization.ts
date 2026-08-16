@@ -75,7 +75,7 @@ describe("vault — trade authorization", () => {
         cooldownSeconds: 60,
         maxOracleStalenessSec: 30,
         maxConfBps: 100,
-        maxOracleDeviationBps: 200,
+        maxOracleDeviationBps: 200, sizeBps: 1_000,
       })
       .accountsPartial({
         owner: owner.publicKey,
@@ -194,7 +194,7 @@ describe("vault — trade authorization", () => {
     );
     const names = writers.map((i: any) => i.name).sort();
     expect(names, "only init and the verified callback may write an intent").to.deep.equal(
-      ["evaluateStrategy", "evaluateStrategyV2Callback", "executeTrade", "initTradeIntent"].sort()
+      ["evaluateStrategy", "evaluateStrategyV3Callback", "executeTrade", "initTradeIntent"].sort()
     );
   });
 
@@ -230,7 +230,7 @@ describe("vault — trade authorization", () => {
   const LIMITS = {
     maxTradeBps: 1_000, maxSlippageBps: 50, dailyLossLimitBps: 500,
     cooldownSeconds: 60, maxOracleStalenessSec: 30, maxConfBps: 100,
-    maxOracleDeviationBps: 200,
+    maxOracleDeviationBps: 200, sizeBps: 1_000,
   };
 
   const updateLimits = (signer: Keypair, vault: PublicKey, limits: any) =>

@@ -35,7 +35,7 @@ const STATUS_OFFSET =
   32 + // owner
   32 + // base_mint
   32 + // quote_mint
-  18; // RiskLimits: 2+2+2+4+4+2+2
+  20; // RiskLimits: 2+2+2+4+4+2+2+2 (the last is size_bps, T-38)
 
 const STATUSES: VaultStatus[] = ["active", "paused", "stopped"];
 

@@ -43,8 +43,8 @@ pub use errors::VaultError;
 pub use oracle::*;
 pub use state::*;
 
-const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy");
-const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy_v2");
+const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy_v2");
+const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy_v3");
 
 declare_id!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ");
 
@@ -65,7 +65,7 @@ pub mod vault {
         vault_config.bump = ctx.bumps.vault_config;
         vault_config.nonce = 0;
         vault_config.last_trade_ts = 0;
-        vault_config.reserved = [0u8; 64];
+        vault_config.reserved = [0u8; 62];
 
         emit!(VaultInitialized {
             vault: vault_config.key(),
@@ -212,6 +212,7 @@ pub mod vault {
         strategy.encryption_pubkey = encryption_pubkey;
         strategy.version = strategy.version.checked_add(1).ok_or(VaultError::Overflow)?;
         strategy.bump = ctx.bumps.strategy_state;
+        strategy.reserved = [0u8; 32];
 
         // Deliberately carries no ciphertext: an event is a public log, and
         // there is no reason to publish the payload twice.
@@ -455,14 +456,13 @@ pub mod vault {
             .encrypted_u64(strategy.ciphertexts[0])
             .encrypted_u64(strategy.ciphertexts[1])
             .encrypted_u64(strategy.ciphertexts[2])
-            .encrypted_u64(strategy.ciphertexts[3])
             .build();
 
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![StoreStrategyCallback::callback_ix(
+            vec![StoreStrategyV2Callback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
                 &[CallbackAccount {
@@ -477,10 +477,10 @@ pub mod vault {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "store_strategy")]
-    pub fn store_strategy_callback(
-        ctx: Context<StoreStrategyCallback>,
-        output: SignedComputationOutputs<StoreStrategyOutput>,
+    #[arcium_callback(encrypted_ix = "store_strategy_v2")]
+    pub fn store_strategy_v2_callback(
+        ctx: Context<StoreStrategyV2Callback>,
+        output: SignedComputationOutputs<StoreStrategyV2Output>,
     ) -> Result<()> {
         // Cluster pinning: this is the trust boundary. See ARCHITECTURE §7.1.
         require!(
@@ -492,7 +492,7 @@ pub mod vault {
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
         ) {
-            Ok(StoreStrategyOutput { field_0 }) => field_0,
+            Ok(StoreStrategyV2Output { field_0 }) => field_0,
             Err(_) => return Err(VaultError::AbortedComputation.into()),
         };
 
@@ -543,17 +543,18 @@ pub mod vault {
             .encrypted_u64(strategy.mxe_ciphertexts[0])
             .encrypted_u64(strategy.mxe_ciphertexts[1])
             .encrypted_u64(strategy.mxe_ciphertexts[2])
-            .encrypted_u64(strategy.mxe_ciphertexts[3])
             .plaintext_u64(price)
             .plaintext_u64(quote_value)
             .plaintext_u64(base_value)
+            // Public, and correctly so — see RiskLimits::size_bps.
+            .plaintext_u64(ctx.accounts.vault_config.limits.size_bps as u64)
             .build();
 
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![EvaluateStrategyV2Callback::callback_ix(
+            vec![EvaluateStrategyV3Callback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
                 // Every account the callback struct declares must appear here
@@ -587,10 +588,10 @@ pub mod vault {
     /// This is the only writer of `TradeIntent`, and the only thing that can
     /// authorize vault funds into a swap. It authorizes a side and a size inside
     /// a slot window — never a destination, never a program, never a withdrawal.
-    #[arcium_callback(encrypted_ix = "evaluate_strategy_v2")]
-    pub fn evaluate_strategy_v2_callback(
-        ctx: Context<EvaluateStrategyV2Callback>,
-        output: SignedComputationOutputs<EvaluateStrategyV2Output>,
+    #[arcium_callback(encrypted_ix = "evaluate_strategy_v3")]
+    pub fn evaluate_strategy_v3_callback(
+        ctx: Context<EvaluateStrategyV3Callback>,
+        output: SignedComputationOutputs<EvaluateStrategyV3Output>,
     ) -> Result<()> {
         require!(
             ctx.accounts.cluster_account.key() == expected_cluster(),
@@ -871,7 +872,7 @@ pub struct InitTradeIntent<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[queue_computation_accounts("store_strategy", payer)]
+#[queue_computation_accounts("store_strategy_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct ConvertStrategy<'info> {
@@ -920,9 +921,9 @@ pub struct ConvertStrategy<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("store_strategy")]
+#[callback_accounts("store_strategy_v2")]
 #[derive(Accounts)]
-pub struct StoreStrategyCallback<'info> {
+pub struct StoreStrategyV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_STRATEGY))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
@@ -939,7 +940,7 @@ pub struct StoreStrategyCallback<'info> {
     pub strategy_state: Box<Account<'info, StrategyState>>,
 }
 
-#[queue_computation_accounts("evaluate_strategy_v2", payer)]
+#[queue_computation_accounts("evaluate_strategy_v3", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct EvaluateStrategy<'info> {
@@ -1009,9 +1010,9 @@ pub struct EvaluateStrategy<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("evaluate_strategy_v2")]
+#[callback_accounts("evaluate_strategy_v3")]
 #[derive(Accounts)]
-pub struct EvaluateStrategyV2Callback<'info> {
+pub struct EvaluateStrategyV3Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EVALUATE_STRATEGY))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
@@ -1038,7 +1039,7 @@ pub struct EvaluateStrategyV2Callback<'info> {
     pub strategy_state: Box<Account<'info, StrategyState>>,
 }
 
-#[init_computation_definition_accounts("store_strategy", payer)]
+#[init_computation_definition_accounts("store_strategy_v2", payer)]
 #[derive(Accounts)]
 pub struct InitStoreStrategyCompDef<'info> {
     #[account(mut)]
@@ -1058,7 +1059,7 @@ pub struct InitStoreStrategyCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[init_computation_definition_accounts("evaluate_strategy_v2", payer)]
+#[init_computation_definition_accounts("evaluate_strategy_v3", payer)]
 #[derive(Accounts)]
 pub struct InitEvaluateStrategyCompDef<'info> {
     #[account(mut)]

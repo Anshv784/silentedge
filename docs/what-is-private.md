@@ -11,7 +11,8 @@ encryption works; the question is what survives contact with a public chain.
 ## Verified on devnet
 
 `tests/strategy-engine.ts`, against the live Arcium devnet cluster, with
-`entry_below = 150`, `exit_above = 180.50`, `stop_below = 120`, `size_bps = 1000`
+`entry_below = 150`, `exit_above = 180.50`, `stop_below = 120`
+(plus `size_bps = 1000`, which is public vault config — see §1)
 and a vault worth 2,500 USDC:
 
 | Price | Action | Amount | Meaning |
@@ -81,7 +82,7 @@ would cost gates and hide nothing.
 
 This is the part that matters, and it is not fixed by better cryptography.
 
-### 1. `size_bps` is fully recoverable — not partially, completely
+### 1. `size_bps` was fully recoverable — so it is no longer encrypted
 
 ```
 amount = vault_value × size_bps / 10_000
@@ -91,7 +92,7 @@ amount = vault_value × size_bps / 10_000
 **one non-HOLD evaluation discloses `size_bps` exactly.** One of the four
 "secret" fields is not secret after a single trade.
 
-**Recommendation:** move `size_bps` out of the encrypted struct and into public
+**Done.** `size_bps` moved out of the encrypted struct and into public
 vault config. Keeping it encrypted implies a protection that does not exist, and
 that is worse than storing it in the clear. Deferred rather than done because it
 changes the `Strategy` shape everywhere; it should land before mainnet.
@@ -161,7 +162,8 @@ What we must not say:
 
 - ~~"Your strategy is invisible"~~ — the decisions are visible by construction.
 - ~~"Nobody can figure out your strategy"~~ — a patient observer can bound it.
-- ~~"All four parameters are secret"~~ — `size_bps` is not, in practice.
+- ~~"All four parameters are secret"~~ — there are three now, and they are.
+  `size_bps` is public config, because pretending otherwise was the problem.
 
 ## Where this differs from the naive expectation
 

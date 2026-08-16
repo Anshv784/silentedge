@@ -180,7 +180,6 @@ export function StrategyBuilder({
             <Row k="entry_below" v={preview.entryBelow} />
             <Row k="exit_above" v={preview.exitAbove} />
             <Row k="stop_below" v={preview.stopBelow} />
-            <Row k="size_bps" v={BigInt(preview.sizeBps)} />
           </dl>
         ) : (
           <p className="text-[12px] text-[var(--color-ink-soft)]">
@@ -188,9 +187,16 @@ export function StrategyBuilder({
           </p>
         )}
         <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
-          Four integers, fixed width. A rule you switched off still occupies its
-          slot with a value that can never match, so an observer cannot tell
+          Three integers, fixed width. A rule you switched off still occupies
+          its slot with a value that can never match, so an observer cannot tell
           which rules you use.
+        </p>
+        <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-exposed)]">
+          Your trade size is <strong>not</strong> in here. The traded amount and
+          your vault balance are both public in the same transaction, so
+          dividing one by the other recovers the size exactly — the first time
+          you trade. Encrypting it would look like protection without being any.
+          It is stored in the clear, in your vault settings.
         </p>
       </div>
 

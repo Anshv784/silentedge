@@ -39,7 +39,8 @@ const usd = (n: number) => BigInt(Math.round(n * 1e6));
 const fmt = (v: bigint) => `$${(Number(v) / 1e6).toFixed(2)}`;
 const NEVER_SELL = 18_446_744_073_709_551_615n;
 const NEVER_BUY = 0n;
-const SIZE_BPS = 1_000n;
+/** Public vault setting now, not an encrypted field — THREAT_MODEL T-38. */
+const SIZE_BPS = 1_000;
 /** Funds the vault so a sized trade is non-zero. 10% of this is the trade. */
 const DEPOSIT = usd(5_000);
 const FINALIZE_TIMEOUT_MS = 240_000;
@@ -86,6 +87,35 @@ describe("vault — authorization on devnet", function () {
     throw new Error(`${label}: no on-chain effect within ${FINALIZE_TIMEOUT_MS}ms`);
   };
 
+
+  /**
+   * Build, simulate, then send raw.
+   *
+   * `@anchor-lang/core`'s `.rpc()` reports on-chain failures here as
+   * `Unknown action 'undefined'`, which names neither the instruction nor the
+   * error — a test that fails this way tells you nothing. Simulating first
+   * surfaces the AnchorError line; sending raw afterwards avoids the wrapper
+   * entirely.
+   */
+  async function send(builder: any, label: string) {
+    const tx = await builder.transaction();
+    tx.feePayer = owner.publicKey;
+    tx.recentBlockhash = (
+      await provider.connection.getLatestBlockhash()
+    ).blockhash;
+    tx.sign(owner);
+    const sim = await provider.connection.simulateTransaction(tx);
+    if (sim.value.err) {
+      const why = (sim.value.logs || []).filter((l: string) => /Error/.test(l));
+      throw new Error(`${label}: ${JSON.stringify(sim.value.err)} :: ${why.join(" | ")}`);
+    }
+    const sig = await provider.connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: true,
+    });
+    await provider.connection.confirmTransaction(sig, "confirmed");
+    return sig;
+  }
+
   let env: any;
   let mxePublicKey: Uint8Array;
 
@@ -106,7 +136,7 @@ describe("vault — authorization on devnet", function () {
       await program.methods.initializeVault({
         maxTradeBps: 1_000, maxSlippageBps: 50, dailyLossLimitBps: 500,
         cooldownSeconds: 60, maxOracleStalenessSec: 30, maxConfBps: 100,
-        maxOracleDeviationBps: 200,
+        maxOracleDeviationBps: 200, sizeBps: 1_000,
       }).accountsPartial({
         owner: owner.publicKey, vaultConfig: vault,
         baseMint: BASE_MINT, quoteMint: QUOTE_MINT,
@@ -159,17 +189,17 @@ describe("vault — authorization on devnet", function () {
     const nonce = randomBytes(16);
     const cts = cipher.encrypt(fields, nonce);
 
-    await program.methods.submitStrategy(
+    await send(program.methods.submitStrategy(
       cts.map((c: number[]) => Array.from(c)),
       new BN(deserializeLE(nonce).toString()),
       Array.from(pub)
     ).accountsPartial({
       owner: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
       systemProgram: SystemProgram.programId,
-    }).signers([owner]).rpc({ commitment: "confirmed" });
+    }), "submit_strategy");
 
     const off = new BN(randomBytes(8), "hex");
-    await program.methods.convertStrategy(off).accountsPartial({
+    await send(program.methods.convertStrategy(off).accountsPartial({
       payer: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
       computationAccount: getComputationAccAddress(env.arciumClusterOffset, off),
       clusterAccount: getClusterAccAddress(env.arciumClusterOffset),
@@ -177,8 +207,8 @@ describe("vault — authorization on devnet", function () {
       mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
       executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
       compDefAccount: getCompDefAccAddress(program.programId,
-        Buffer.from(getCompDefAccOffset("store_strategy")).readUInt32LE()),
-    }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
+        Buffer.from(getCompDefAccOffset("store_strategy_v2")).readUInt32LE()),
+    }), "convert_strategy");
     // The version advancing IS the callback's effect — an unambiguous signal
     // that does not depend on a websocket staying up.
     await settle("convert_strategy", async () =>
@@ -201,7 +231,7 @@ describe("vault — authorization on devnet", function () {
       const tx = await provider.connection.getTransaction(s.signature, {
         commitment: "confirmed", maxSupportedTransactionVersion: 0,
       });
-      if (tx?.meta?.logMessages?.some((l) => l.includes("EvaluateStrategyV2Callback")))
+      if (tx?.meta?.logMessages?.some((l) => l.includes("EvaluateStrategyV3Callback")))
         return true;
     }
     return false;
@@ -210,7 +240,7 @@ describe("vault — authorization on devnet", function () {
   async function evaluate() {
     const startSlot = await provider.connection.getSlot("confirmed");
     const off = new BN(randomBytes(8), "hex");
-    await program.methods.evaluateStrategy(off).accountsPartial({
+    await send(program.methods.evaluateStrategy(off).accountsPartial({
       payer: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
       tradeIntent: intentPda, vaultQuoteAta: ata(vault, QUOTE_MINT, true),
       vaultBaseAta: ata(vault, BASE_MINT, true), priceUpdate: PYTH_SOL_USD,
@@ -220,15 +250,15 @@ describe("vault — authorization on devnet", function () {
       mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
       executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
       compDefAccount: getCompDefAccAddress(program.programId,
-        Buffer.from(getCompDefAccOffset("evaluate_strategy_v2")).readUInt32LE()),
-    }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
+        Buffer.from(getCompDefAccOffset("evaluate_strategy_v3")).readUInt32LE()),
+    }), "evaluate_strategy");
     await settle("evaluate_strategy", () => sawCallbackSince(startSlot));
     return program.account.tradeIntent.fetch(intentPda);
   }
 
   it("converts the submitted strategy to MXE-encrypted state", async () => {
     const p = await livePrice();
-    await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY]);
     const s = await program.account.strategyState.fetch(strategyPda);
     expect(s.mxeVersion).to.be.greaterThan(0);
     console.log(`      converted, mxe_version ${s.mxeVersion}`);
@@ -258,7 +288,7 @@ describe("vault — authorization on devnet", function () {
   /** HOLD authorizes nothing — a missing intent and "do not trade" are one state. */
   it("authorizes nothing when the strategy says HOLD", async () => {
     const p = await livePrice();
-    await submitAndConvert([p - usd(20), p + usd(20), p - usd(30), SIZE_BPS]);
+    await submitAndConvert([p - usd(20), p + usd(20), p - usd(30)]);
     const before = await program.account.tradeIntent.fetch(intentPda);
     const intent = await evaluate();
     console.log(`      band ${fmt(p - usd(20))}..${fmt(p + usd(20))} -> no new authorization`);
@@ -270,13 +300,13 @@ describe("vault — authorization on devnet", function () {
   /** Replacing the strategy must invalidate an authorization still in flight. */
   it("invalidates an in-flight authorization when the strategy changes", async () => {
     const p = await livePrice();
-    await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY]);
     const intent = await evaluate();
     expect(intent.side).to.equal(1);
     const authorizedVersion = intent.strategyVersion;
 
     // A new submission bumps the version the intent was bound to.
-    await submitAndConvert([p + usd(15), NEVER_SELL, NEVER_BUY, SIZE_BPS]);
+    await submitAndConvert([p + usd(15), NEVER_SELL, NEVER_BUY]);
     const s = await program.account.strategyState.fetch(strategyPda);
     expect(s.mxeVersion, "version should have moved").to.be.greaterThan(authorizedVersion);
 

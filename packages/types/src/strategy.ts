@@ -172,7 +172,9 @@ export function validateStrategy(
 }
 
 /**
- * Collapse a validated draft into the four integers the circuit evaluates.
+ * Collapse a validated draft into the three integers the circuit evaluates,
+ * plus `sizeBps`, which is public vault config rather than an encrypted field
+ * (THREAT_MODEL T-38). `encryptStrategy` takes only the three.
  *
  * Throws on an invalid draft rather than emitting a silently wrong strategy:
  * this is the last point where a mistake is still cheap.
