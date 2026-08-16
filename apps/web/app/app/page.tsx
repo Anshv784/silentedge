@@ -241,10 +241,15 @@ export default function Page() {
    */
   async function waitForConversion(p: NonNullable<typeof program>, owner: typeof publicKey) {
     if (!owner) return;
-    const before = mxeVersion;
+    // Wait for non-zero rather than for an increase. `submit_strategy` zeroes
+    // mxe_version — that is what retires the previous strategy — so any
+    // non-zero reading after a submission is this conversion and not a stale
+    // one. Comparing against a remembered version would also work, but only
+    // while this component's state is fresh, and it is the sort of thing that
+    // quietly stops working.
     for (let i = 0; i < 40; i++) {
-      const now = await readMxeVersion(p, owner).catch(() => before);
-      if (now > before) {
+      const now = await readMxeVersion(p, owner).catch(() => 0);
+      if (now > 0) {
         setMxeVersion(now);
         return;
       }
@@ -261,7 +266,29 @@ export default function Page() {
    * storage, no logging of the draft anywhere along the way.
    */
   async function encryptAndSubmit(draft: Strategy) {
-    if (!program || !publicKey || !signMessage || !mxe) return;
+    // Say why nothing happened. This used to return silently, so a wallet
+    // without `signMessage` — which is what derives the encryption key — meant
+    // pressing Save did nothing at all, with no error and the panel still
+    // reading as though the strategy were on chain.
+    if (!publicKey || !program) {
+      setEncryptError("Connect a wallet first.");
+      return;
+    }
+    if (!signMessage) {
+      setEncryptError(
+        "This wallet cannot sign messages, and the encryption key is derived " +
+          "from a signature. Nothing was submitted. Try a wallet that supports " +
+          "message signing."
+      );
+      return;
+    }
+    if (!mxe) {
+      setEncryptError(
+        "Still reading the cluster's encryption key. Nothing was submitted — " +
+          "wait a moment and retry."
+      );
+      return;
+    }
 
     // Refuse rather than encrypt to the development stand-in.
     //
@@ -652,12 +679,13 @@ export default function Page() {
                   )
                 ) : null}
                 <p className="mt-3 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
-                  Exits are exempt from the size cap and the cooldown on purpose:
-                  a stop-loss sells the whole position, and a cap can never
-                  exceed half of it. Two of the stored limits — a daily loss
-                  limit and an execution deviation band — are{" "}
-                  <strong>not enforced</strong>; see SECURITY_AUDIT.md rather
-                  than reading them as protection.
+                  Exits are exempt from the size cap, the cooldown, and the
+                  deviation band on purpose: a stop-loss sells the whole
+                  position, a cap can never exceed half of it, and refusing an
+                  exit because the price fell further would disarm the stop in
+                  the move it exists for. One stored limit — a daily loss limit
+                  — is <strong>not enforced</strong> at all; see
+                  SECURITY_AUDIT.md rather than reading it as protection.
                 </p>
               </Panel>
             ) : null}

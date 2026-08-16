@@ -96,9 +96,38 @@ the newer vaults are fine. It is on this list only because you will see them
 skipped in the executor logs as `predates the current account layout` and should
 know that is expected rather than a fault.
 
+One of the two is the deploy wallet's own vault (132 bytes against the current
+212), and it took down the whole devnet authorization suite in `before all` with
+error 3003 — the test ran as that wallet, so a suite about the program was
+failing on one wallet's history. It now generates a fresh owner per run and
+funds it from the payer, the way `tests/e2e-devnet.ts` always did. Costs a few
+cents of devnet rent; buys a result that depends only on the program.
+
 The rule that prevents a repeat is written at `VaultConfig::reserved`, and a test
 now asserts the account size does not change. Both layout changes happened
-*before* that rule existed; nothing since has broken it.
+*before* that rule existed; nothing since has broken it — including this
+session's changes, which added behaviour to `submit_strategy`, `convert_strategy`
+and `execute_trade` without moving a single field.
+
+---
+
+## 5. Read FINAL_AUDIT.md before trusting any security claim — 10 MINUTES
+
+[`FINAL_AUDIT.md`](FINAL_AUDIT.md) is the last pass over the whole project. It
+found eight real issues; seven are fixed and one is not, and the one that is not
+is the most custody-critical check in the program:
+
+> **Cluster pinning (T-37) has no runtime detector.** The previous test claimed
+> to detect its removal and a mutation run proved it did not. Four approaches at
+> a genuine detector failed for structural reasons. The derivation is proven by
+> Rust unit tests; the call site is unverified. Graded CODED, not ENFORCED.
+
+Two of the fixed findings would have cost a user money: a cooldown that disabled
+the stop-loss, and a strategy replacement that did not stop the old strategy
+trading. Both now have detectors that were confirmed by deleting the fix.
+
+Nothing there needs a decision from you. It is on this list because the honest
+summary of the security posture is in that file and not in this one.
 
 ---
 

@@ -125,28 +125,6 @@ pub struct VaultConfig {
     /// without a special case.
     pub last_trade_ts: i64,
 
-    /// Ceiling on how much of the vault may sit in the base asset, in basis
-    /// points of total value, enforced on entries only.
-    ///
-    /// The strategy decides *when* to buy; this decides how concentrated the
-    /// vault is allowed to become. A rule like "buy below $150" keeps firing
-    /// all the way down, so without a ceiling a falling market converts the
-    /// whole vault into the falling asset — each individual trade inside its
-    /// per-trade cap, and the position unbounded in aggregate. `max_trade_bps`
-    /// cannot express this: it bounds one trade, not the sum of them.
-    ///
-    /// 0 means no ceiling, which is the value existing vaults read out of
-    /// zeroed reserve bytes — preserving today's behaviour exactly.
-    pub max_base_exposure_bps: u16,
-
-    /// Refuse trades below this share of the spendable balance.
-    ///
-    /// A dust trade costs the same transaction and swap spread as a real one
-    /// and moves nothing. With a small `size_bps` on a small vault, a strategy
-    /// can otherwise grind the balance away in fees while appearing to work.
-    /// 0 disables it, which is what existing vaults read.
-    pub min_trade_bps: u16,
-
     /// Whether this vault appears in public discovery.
     ///
     /// Carved from the reserve rather than appended, so every existing vault
@@ -167,6 +145,34 @@ pub struct VaultConfig {
     /// interpret it, and a client must treat it as untrusted text from a
     /// stranger — it is chosen by the vault's owner, not verified by anyone.
     pub name: [u8; 32],
+
+    /// Ceiling on how much of the vault may sit in the base asset, in basis
+    /// points of total value, enforced on entries only.
+    ///
+    /// Sits immediately before `reserved` because that is the rule. It was
+    /// briefly inserted ahead of `listed`/`name` instead, which kept the struct
+    /// the same total size — and shifted both of those fields four bytes, so
+    /// every vault created in between would have read its listing flag out of
+    /// the wrong place. Equal size is not the invariant; equal offsets are.
+    ///
+    /// The strategy decides *when* to buy; this decides how concentrated the
+    /// vault is allowed to become. A rule like "buy below $150" keeps firing
+    /// all the way down, so without a ceiling a falling market converts the
+    /// whole vault into the falling asset — each individual trade inside its
+    /// per-trade cap, and the position unbounded in aggregate. `max_trade_bps`
+    /// cannot express this: it bounds one trade, not the sum of them.
+    ///
+    /// 0 means no ceiling, which is the value existing vaults read out of
+    /// zeroed reserve bytes — preserving today's behaviour exactly.
+    pub max_base_exposure_bps: u16,
+
+    /// Refuse trades below this share of the spendable balance.
+    ///
+    /// A dust trade costs the same transaction and swap spread as a real one
+    /// and moves nothing. With a small `size_bps` on a small vault, a strategy
+    /// can otherwise grind the balance away in fees while appearing to work.
+    /// 0 disables it, which is what existing vaults read.
+    pub min_trade_bps: u16,
 
     /// Space for fields this struct does not have yet. Do not read or write it.
     ///
@@ -219,8 +225,12 @@ pub struct StrategyState {
     /// Encryption nonce. Fresh per submission; reuse would leak.
     pub nonce: u128,
     pub encryption_pubkey: [u8; 32],
-    /// Bumped on every submission. Binds trade authorizations to the strategy
-    /// that produced them, so replacing a strategy invalidates work in flight.
+    /// Bumped on every submission of *plaintext* ciphertext by the owner.
+    ///
+    /// Note what binds an authorization: `mxe_version`, not this. Submitting a
+    /// replacement now also zeroes `mxe_ciphertexts` and `mxe_version`, which
+    /// is what actually stops the previous strategy trading — this comment used
+    /// to claim that `version` did it, and nothing binds to `version`.
     pub version: u32,
     pub bump: u8,
     /// The vault this strategy was copied from, or the default pubkey if it is
@@ -244,7 +254,27 @@ pub struct StrategyState {
     /// Zero `mxe_version` means the conversion has not happened yet.
     pub mxe_ciphertexts: [[u8; 32]; STRATEGY_FIELDS],
     pub mxe_nonce: u128,
+    /// The `version` this converted copy is *for*.
+    ///
+    /// Set by `convert_strategy` when it queues the computation, before the
+    /// ciphertext exists — so a non-zero value on its own does not mean the
+    /// strategy can be evaluated. Use `is_armed()`, never this field alone.
     pub mxe_version: u32,
+}
+
+impl StrategyState {
+    /// Is there a converted strategy that can actually be evaluated?
+    ///
+    /// Two conditions, and both are load-bearing. `mxe_version` is claimed at
+    /// queue time so the callback can detect that the strategy was replaced
+    /// underneath it; during that window the version is set and the ciphertext
+    /// is still zero. Testing the version alone would let an evaluation run
+    /// against 96 zero bytes — which is not a strategy, and whose decrypted
+    /// thresholds are whatever that decodes to.
+    pub fn is_armed(&self) -> bool {
+        self.mxe_version > 0
+            && self.mxe_ciphertexts.iter().any(|c| c.iter().any(|b| *b != 0))
+    }
 }
 
 /// A single authorized trade, written only by a verified Arcium callback.
@@ -264,13 +294,14 @@ pub struct TradeIntent {
     pub side: u8,
     /// Input amount in the source mint's base units.
     pub amount_in: u64,
-    /// Floor on the output, in the destination mint's base units.
+    /// Floor on the output, in the destination mint's base units, as computed
+    /// when the intent was minted.
     ///
-    /// NOT YET ENFORCED. The callback writes 0 and `execute_trade` moves no
-    /// funds, so nothing reads this today. The swap lands in the trading phase,
-    /// and it must set this from a fresh quote bounded by
-    /// `RiskLimits.max_slippage_bps` *before* any CPI — a swap submitted while
-    /// this is still 0 has no slippage floor at all.
+    /// Recorded, but deliberately *not* what the swap is checked against.
+    /// `execute_trade` re-derives the floor from a fresh oracle read and
+    /// enforces that instead, so a floor computed at decision time cannot go
+    /// stale between the callback and execution. This field is the audit trail
+    /// of what the decision expected; the enforced number is the fresh one.
     pub min_amount_out: u64,
     /// Slot after which this authorization is dead.
     pub expires_at_slot: u64,
@@ -280,8 +311,12 @@ pub struct TradeIntent {
     /// Binds the authorization to the strategy that produced it. Replacing the
     /// strategy invalidates any intent still in flight.
     pub strategy_version: u32,
-    /// The oracle price the decision was made at, for the execution-time
-    /// deviation check.
+    /// The oracle price the decision was made at.
+    ///
+    /// `execute_trade` compares this against a fresh read and refuses an entry
+    /// that would fill more than `max_oracle_deviation_bps` above it. Exits are
+    /// exempt by design — see the check itself for why blocking a stop because
+    /// the price fell further would be backwards.
     pub oracle_price: u64,
     pub consumed: bool,
     pub bump: u8,

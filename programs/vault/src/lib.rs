@@ -208,7 +208,7 @@ pub mod vault {
         );
         // Only a converted strategy is evaluable; copying an unconverted one
         // would produce a follower vault that silently never trades.
-        require!(leader.mxe_version > 0, VaultError::StrategyNotConverted);
+        require!(leader.is_armed(), VaultError::StrategyNotConverted);
         require!(
             ctx.accounts.vault_config.status != VaultStatus::Stopped,
             VaultError::VaultStopped
@@ -219,7 +219,10 @@ pub mod vault {
         follower.mxe_ciphertexts = leader.mxe_ciphertexts;
         follower.mxe_nonce = leader.mxe_nonce;
         follower.version = follower.version.checked_add(1).ok_or(VaultError::Overflow)?;
-        follower.mxe_version = follower.mxe_version.checked_add(1).ok_or(VaultError::Overflow)?;
+        // Same invariant the conversion path now keeps: mxe_version names the
+        // version whose ciphertext is actually stored. Bumping the two counters
+        // independently let them drift apart for no reason.
+        follower.mxe_version = follower.version;
         follower.bump = ctx.bumps.strategy_state;
         follower.follows = ctx.accounts.leader_vault.key();
 
@@ -334,6 +337,20 @@ pub mod vault {
         strategy.encryption_pubkey = encryption_pubkey;
         strategy.version = strategy.version.checked_add(1).ok_or(VaultError::Overflow)?;
         strategy.bump = ctx.bumps.strategy_state;
+
+        // Retire the converted copy. Evaluation reads `mxe_ciphertexts` and
+        // authorizations bind to `mxe_version`, so leaving them in place meant
+        // submitting a replacement changed nothing: the old strategy kept
+        // trading until a separate convert landed, and a user submitting a
+        // deliberately inert strategy to stop a bot would have been ignored.
+        // state.rs claimed the opposite of what the code did.
+        //
+        // Fail closed: `evaluate_strategy` requires mxe_version > 0, so trading
+        // halts until the owner converts the replacement. No strategy is the
+        // right state for a strategy the user just replaced.
+        strategy.mxe_ciphertexts = [[0u8; 32]; STRATEGY_FIELDS];
+        strategy.mxe_nonce = 0;
+        strategy.mxe_version = 0;
         strategy.follows = Pubkey::default();
         strategy.reserved = [0u8; 0];
 
@@ -469,6 +486,44 @@ pub mod vault {
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
         let min_out = oracle_min_out(side, amount_in, &price, max_slippage_bps)?;
 
+        // A floor of zero is not a floor. `oracle_min_out` truncates, so a
+        // small enough amount rounds the whole expectation away — at $150/SOL
+        // with 5% slippage, any sell under ~13 lamports floors to 0. Refusing
+        // is right on its own terms too: a trade that small cannot cover the
+        // transaction that carries it.
+        require!(min_out > 0, VaultError::TradeTooSmall);
+
+        // How far the market moved between the decision and this execution.
+        //
+        // `max_oracle_deviation_bps` was settable, range-checked, shown in the
+        // interface and described in the docs, and nothing read it — an inert
+        // setting that looked like a control. This is that control.
+        //
+        // It bounds staleness of the *decision*, which nothing else does:
+        // `min_out` is derived from the fresh price and so always tracks the
+        // market, and `expires_at_slot` bounds elapsed slots rather than
+        // elapsed price. Without this, an executor could hold an authorization
+        // for its whole window and fire it after a large move.
+        //
+        // Entries only, and only against a rising price — the same asymmetry as
+        // the cap and the cooldown above, for the same reason. A stop fires
+        // because the price fell; refusing to execute it *because the price
+        // fell further* would disarm the vault's only downside control in
+        // exactly the move it exists for. A sell into a risen price needs no
+        // protection either. So the one case left is the one that can actually
+        // hurt: buying materially higher than the decision was made at.
+        if side == SIDE_BUY && intent.oracle_price > 0 {
+            let decided = intent.oracle_price as u128;
+            if (price.price as u128) > decided {
+                let rise = (price.price as u128) - decided;
+                let band = decided
+                    .checked_mul(vault.limits.max_oracle_deviation_bps as u128)
+                    .ok_or(VaultError::Overflow)?
+                    / BPS_DENOMINATOR as u128;
+                require!(rise <= band, VaultError::OracleDeviationTooLarge);
+            }
+        }
+
         // Concentration ceiling, on entries only. Priced with the same oracle
         // read the floor uses, so a manipulated price cannot slip past it.
         //
@@ -557,8 +612,15 @@ pub mod vault {
             VaultError::UnexpectedSourceDelta
         );
         // The proceeds landed in this vault, not somewhere else.
+        //
+        // Two assertions, not one. `saturating_sub` turns a *decrease* into 0,
+        // so `delta >= min_out` silently passes whenever min_out is 0 — and a
+        // route could then drain the destination account while spending only
+        // the authorized dust from the source, satisfying the check above. The
+        // destination must never fall, whatever the floor says.
+        require!(dst_after >= dst_before, VaultError::DestinationDrained);
         require!(
-            dst_after.saturating_sub(dst_before) >= min_out,
+            dst_after - dst_before >= min_out,
             VaultError::SlippageExceeded
         );
         // Rent is not a funding source for a swap.
@@ -612,8 +674,27 @@ pub mod vault {
     pub fn convert_strategy(ctx: Context<ConvertStrategy>, computation_offset: u64) -> Result<()> {
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
+        require!(
+            ctx.accounts.strategy_state.version > 0,
+            VaultError::NoStrategyStored
+        );
+
+        // Claim the version this conversion is for, before queueing it.
+        //
+        // The callback used to stamp `mxe_version = strategy.version` read
+        // live, seconds later. A submission landing in between then attached
+        // the *new* version to the *old* ciphertext — and since submitting now
+        // also disarms the strategy, an in-flight callback would silently
+        // re-arm the strategy the owner had just replaced.
+        //
+        // Claiming it here gives the callback something to check. It cannot
+        // arm anything on its own: `is_armed()` requires the ciphertext too,
+        // and that is still zero until the callback writes it.
+        {
+            let strategy = &mut ctx.accounts.strategy_state;
+            strategy.mxe_version = strategy.version;
+        }
         let strategy = &ctx.accounts.strategy_state;
-        require!(strategy.version > 0, VaultError::NoStrategyStored);
 
         let args = ArgBuilder::new()
             .x25519_pubkey(strategy.encryption_pubkey)
@@ -662,9 +743,16 @@ pub mod vault {
         };
 
         let strategy = &mut ctx.accounts.strategy_state;
+
+        // Refuse if the strategy moved while this was in flight. `submit_strategy`
+        // zeroes the claim, so a replacement makes this fail rather than arm a
+        // superseded strategy under the new version's number.
+        require!(
+            strategy.mxe_version == strategy.version,
+            VaultError::StrategySuperseded
+        );
         strategy.mxe_ciphertexts = o.ciphertexts;
         strategy.mxe_nonce = o.nonce;
-        strategy.mxe_version = strategy.version;
 
         emit!(StrategyConverted {
             vault: strategy.vault,
@@ -693,7 +781,7 @@ pub mod vault {
         );
 
         let strategy = &ctx.accounts.strategy_state;
-        require!(strategy.mxe_version > 0, VaultError::StrategyNotConverted);
+        require!(strategy.is_armed(), VaultError::StrategyNotConverted);
 
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
 
@@ -1463,4 +1551,93 @@ pub struct LimitsUpdated {
     /// The bumped nonce, which is also the receipt that any in-flight
     /// authorization was invalidated.
     pub nonce: u64,
+}
+
+
+#[cfg(test)]
+mod arming_tests {
+    use super::*;
+
+    fn blank() -> StrategyState {
+        StrategyState {
+            vault: Pubkey::default(),
+            ciphertexts: [[0u8; 32]; STRATEGY_FIELDS],
+            nonce: 0,
+            encryption_pubkey: [0u8; 32],
+            version: 0,
+            bump: 0,
+            follows: Pubkey::default(),
+            reserved: [],
+            mxe_ciphertexts: [[0u8; 32]; STRATEGY_FIELDS],
+            mxe_nonce: 0,
+            mxe_version: 0,
+        }
+    }
+
+    /// The window this exists for: `convert_strategy` claims the version when
+    /// it queues the computation, so between the queue and the callback the
+    /// version is set and the ciphertext is not. Evaluating there would feed
+    /// 96 zero bytes to the circuit as if they were a strategy.
+    #[test]
+    fn a_claimed_version_alone_is_not_armed() {
+        let mut s = blank();
+        s.version = 4;
+        s.mxe_version = 4; // claimed by convert_strategy
+        assert!(!s.is_armed(), "a claim without ciphertext must not be evaluable");
+
+        s.mxe_ciphertexts[1][0] = 1; // the callback lands
+        assert!(s.is_armed());
+    }
+
+    /// And the other direction: ciphertext left behind with the version cleared
+    /// is what `submit_strategy` produces if the zeroing is ever made partial.
+    #[test]
+    fn ciphertext_without_a_version_is_not_armed() {
+        let mut s = blank();
+        s.mxe_ciphertexts[0][7] = 9;
+        assert!(!s.is_armed());
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    /// The derivation behind the T-37 mitigation.
+    ///
+    /// This proves the constant and the PDA derivation, and deliberately does
+    /// not prove the call site: no test in this repo detects the removal of the
+    /// `require!` in either callback, for the reasons written above
+    /// `derives the pinned cluster` in tests/trade-authorization.ts. Graded
+    /// CODED rather than ENFORCED in SECURITY_AUDIT.md.
+    #[test]
+    fn pins_the_expected_cluster() {
+        let derived = expected_cluster();
+        let manual = Pubkey::find_program_address(
+            &[CLUSTER_PDA_SEED, &EXPECTED_CLUSTER_OFFSET.to_le_bytes()],
+            &ARCIUM_PROG_ID,
+        )
+        .0;
+        assert_eq!(derived, manual, "expected_cluster must be that PDA and no other");
+
+        // A different offset must give a different account, or pinning is
+        // vacuous whatever the call site does.
+        let other = Pubkey::find_program_address(
+            &[CLUSTER_PDA_SEED, &(EXPECTED_CLUSTER_OFFSET + 1).to_le_bytes()],
+            &ARCIUM_PROG_ID,
+        )
+        .0;
+        assert_ne!(derived, other);
+    }
+
+    /// devnet and mainnet must not resolve to the same cluster. The constant
+    /// carried no cfg at all for several phases, so a mainnet build pinned the
+    /// devnet cluster — the exact failure the constant exists to prevent.
+    #[test]
+    fn network_arms_are_distinct() {
+        #[cfg(not(feature = "mainnet"))]
+        assert_eq!(EXPECTED_CLUSTER_OFFSET, 456);
+        #[cfg(feature = "mainnet")]
+        assert_eq!(EXPECTED_CLUSTER_OFFSET, 2026);
+    }
 }

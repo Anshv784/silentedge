@@ -2,7 +2,24 @@
 
 Derived from RESEARCH.md. Read that first — this document assumes findings F1–F3.
 
-**Status: PROPOSED. Not approved. No implementation has begun.**
+**Status: BUILT, and this document has drifted from what was built.**
+
+This was the design document, written before implementation, and it is kept as
+the record of what was intended and why. Where the code diverged, the code is
+right and a note marks the spot. Three divergences are worth knowing before you
+read on, because each was a design idea that did not survive contact:
+
+- **`size_bps` is public, not encrypted.** Every trade reveals its own size on
+  chain, so encrypting the parameter that sets it protected nothing while
+  costing a circuit input. It moved to `VaultConfig`. (T-38.)
+- **There is no post-swap deviation band.** §6 describes one; it was not built.
+  The oracle-derived `min_amount_out`, checked after the swap against the
+  actual delta, is the whole slippage bound.
+- **Account count is bounded by `onlyDirectRoutes`, not `maxAccounts`.**
+
+For what the deployed program actually does, read
+[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) — it is graded against the code and
+kept current. This file is history.
 
 ---
 
@@ -144,7 +161,7 @@ Enforced invariants:
 
 ```
 Strategy Builder (browser)
-   │  { entry_below, exit_above, stop_below, size_bps }
+   │  { entry_below, exit_above, stop_below }   (size_bps is public)
    ▼
 Normalize → fixed-size struct, i64 fixed-point
    ▼
@@ -203,7 +220,7 @@ pub fn evaluate(
     let sell = (price > s.exit_above) | (price < s.stop_below);
 
     let action = if sell { 2u8 } else if buy { 1u8 } else { 0u8 };
-    let amount = (vault_value * s.size_bps) / 10_000;
+    let amount = (vault_value * size_bps) / 10_000;  // size_bps public, passed in
     let amount = if action == 0 { 0 } else { amount };
 
     (action.reveal(), amount.reveal())
@@ -265,9 +282,10 @@ This replaces the brief's `MXESigningKey` flow.
                       ▼
       CPI Jupiter route, invoke_signed(vault PDA seeds)
                       ▼
-      post-swap assertions: actual_out >= min_amount_out
-                           balances landed in vault ATAs
-                           realised price within Pyth deviation band
+      post-swap assertions: actual_out >= min_amount_out   [built]
+                           balances landed in vault ATAs   [built]
+                           realised price within Pyth       [NOT BUILT]
+                             deviation band
                       ▼
       intent.consumed = true;  vault.nonce += 1;  emit TradeExecuted
 ```
@@ -332,7 +350,9 @@ It does **not** protect strategy ciphertext already published on-chain — see �
 - Computation queue/finalization events and fees paid
 
 ### Private (under Arcium's 1-of-n honest assumption)
-- `entry_below`, `exit_above`, `stop_below`, `size_bps`
+- `entry_below`, `exit_above`, `stop_below` — **not** `size_bps`, which is
+  public in `VaultConfig`: every trade reveals its own size on chain, so
+  encrypting the parameter behind it bought nothing. See T-38.
 - Which specific condition triggered a given action
 - The strategy of a user whose vault has never traded
 
@@ -457,8 +477,10 @@ lands — and for the moves these strategies target, a few seconds is immaterial
 Three honest caveats, all of which resolve in the safe direction:
 
 1. **Fast markets:** in a sharp move, price can travel past the trigger before execution.
-   `min_amount_out` and the Pyth deviation band mean the trade then **fails rather than fills
-   badly**. Users must understand the bot may simply not fire during a flash crash — that is
+   `min_amount_out` — derived from the oracle price at execution and checked
+   against the actual balance delta — means the trade then **fails rather than
+   fills badly**. (The deviation band this originally also cited was never
+   built; `min_amount_out` carries the guarantee alone.) Users must understand the bot may simply not fire during a flash crash — that is
    correct behaviour, not a defect.
 2. **Stop-losses are the weakest fit.** A stop is the one rule where latency genuinely costs
    money. Document that these are *not* guaranteed-execution stops.
@@ -506,11 +528,13 @@ with honest claims. Not a scaling story.
 - Vault program: `initialize_vault`, `deposit`, `withdraw`, `pause`, `resume`,
   `submit_strategy`, `evaluate_strategy`, `evaluate_callback`, `execute_trade`
 - One pair: **USDC ↔ SOL**, both mints hard-allowlisted
-- Strategy: `entry_below`, `exit_above`, `stop_below`, `size_bps` — visual builder only
+- Strategy: `entry_below`, `exit_above`, `stop_below` — visual builder only
+  (`size_bps` shipped public, in `VaultConfig`)
 - `Enc<Mxe, Strategy>` persistent encrypted state
 - **Cluster pinning (§7.1)** on both Arcium instructions — custody-critical
 - Pyth trigger + on-chain freshness/confidence guards, and an oracle-derived `min_out`
-- Jupiter Router `/build` CPI with `maxAccounts` capping
+- Jupiter Router `/build` CPI, account count bounded by `onlyDirectRoutes`
+  (`maxAccounts` is a quote-API parameter and does not bound a CPI)
 - Risk controls: trade cap and cooldown on entries, slippage floor on both sides,
   owner-only pause/stop. **Not** a daily loss limit — see THREAT_MODEL T-31.
 - Permissionless executor + a "self-execute" button in the UI

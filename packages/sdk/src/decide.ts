@@ -14,6 +14,8 @@
 
 export type VaultView = {
   address: string;
+  /** Base units held. Zero means there is nothing an exit could sell. */
+  baseBalance: bigint;
   /** 0 Active, 1 Paused, 2 Stopped. */
   status: number;
   nonce: bigint;
@@ -22,8 +24,21 @@ export type VaultView = {
 };
 
 export type StrategyView = {
-  /** 0 until the owner has run `convert_strategy`. */
+  /**
+   * The version the converted copy is for. Non-zero from the moment
+   * `convert_strategy` queues the computation — so this is NOT "converted".
+   */
   mxeVersion: number;
+  /**
+   * Is there actually a converted strategy to evaluate?
+   *
+   * `convert_strategy` claims `mxeVersion` when it queues, before the callback
+   * writes any ciphertext, so a non-zero version can mean "conversion in
+   * flight". Evaluating there is refused on chain (`StrategyNotConverted`), and
+   * paying for a computation that cannot succeed is the mild version of the
+   * problem — the interface reporting "armed" is the real one.
+   */
+  armed: boolean;
 };
 
 export type IntentView = {
@@ -91,22 +106,32 @@ export function decide(input: {
     return { action: "execute", reason: "live authorization pending" };
   }
 
-  if (!strategy || strategy.mxeVersion === 0) {
+  if (!strategy || !strategy.armed) {
     // The owner submitted a strategy but has not converted it to Enc<Mxe>.
     // Only they can: `convert_strategy` is seeded by the payer.
     return { action: "skip", reason: "strategy not converted by owner" };
   }
 
-  // Entries are refused during cooldown, but exits are not — and we cannot know
-  // which side an evaluation will produce until it runs. Evaluating anyway would
-  // pay MPC fees for a result the program may refuse, so wait unless the vault
-  // could plausibly need an exit. Being conservative here costs latency on
-  // entries only.
+  // Entries are refused during cooldown; exits are not. Evaluation is the only
+  // thing that can mint a SELL, so skipping it during a cooldown disables the
+  // stop-loss for the whole window — the opposite of the intent, and worse the
+  // longer the cooldown. It cost nothing to get wrong in tests because they
+  // only exercised spending an intent that already existed.
+  //
+  // So the cooldown only suppresses evaluation when there is nothing to exit.
+  // With a base position open, the vault keeps evaluating and the program
+  // refuses the entry itself — paying for an occasional wasted computation is
+  // the right trade against silently disarming a stop.
   const elapsed = nowSeconds - vault.lastTradeTs;
-  if (vault.lastTradeTs > 0n && elapsed < BigInt(vault.cooldownSeconds)) {
+  const nothingToExit = vault.baseBalance === 0n;
+  if (
+    nothingToExit &&
+    vault.lastTradeTs > 0n &&
+    elapsed < BigInt(vault.cooldownSeconds)
+  ) {
     return {
       action: "skip",
-      reason: `cooldown: ${elapsed}s of ${vault.cooldownSeconds}s`,
+      reason: `cooldown: ${elapsed}s of ${vault.cooldownSeconds}s, nothing to exit`,
     };
   }
 

@@ -79,6 +79,18 @@ otherwise produces tests that skip without saying so:
 | devnet | no | yes (cluster 456) | strategy → verified callback → `TradeIntent` |
 | surfpool **mainnet** fork | yes | no | `TradeIntent` → swap → post-conditions |
 
+Each row has its own script, because `npm test` runs the whole glob and the
+environment-gated files *self-skip* — a green run that touched almost nothing
+looks identical to a green run that touched everything:
+
+| script | needs | what it proves |
+|---|---|---|
+| `npm run test:pure` | nothing | encryption, sizing, backtest, executor decisions |
+| `npm run test:local` | surfpool devnet fork | custody, authorization structure, account layout |
+| `npm run test:devnet` | devnet + Arcium cluster | strategy → verified callback → `TradeIntent` |
+| `npm run test:fork` | surfpool mainnet fork, `--features mainnet` | the swap and its post-conditions |
+
+
 The seam is `TradeIntent`. On the mainnet fork it is written directly with
 `surfnet_setAccount`, preserving the discriminator and bump the program itself
 wrote and forging only the authorization fields. That is deliberate: a
@@ -91,7 +103,8 @@ test mint, which does not exist on mainnet:
 
 ```bash
 surfpool start --rpc-url "$MAINNET_RPC" --no-deploy
-anchor build -- --features mainnet
+# -p vault, or cargo tries to pass the feature to hello_arcium, which has none
+anchor build -p vault -- --features mainnet
 anchor deploy --provider.cluster http://127.0.0.1:8899
 ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 \
   npx ts-mocha -p ./tsconfig.json -t 300000 tests/swap-execution.ts

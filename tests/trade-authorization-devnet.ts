@@ -15,6 +15,7 @@ import BN from "bn.js";
 import { randomBytes } from "crypto";
 import fs from "fs";
 import { expect } from "chai";
+import { getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import {
   getArciumEnv, getCompDefAccOffset, getArciumProgram,
   RescueCipher, deserializeLE, getMXEPublicKey, getMXEAccAddress, getMempoolAccAddress,
@@ -43,6 +44,8 @@ const NEVER_BUY = 0n;
 const SIZE_BPS = 1_000;
 /** Funds the vault so a sized trade is non-zero. 10% of this is the trade. */
 const DEPOSIT = usd(5_000);
+/** Wrapped SOL for the sell branches. Small: devnet SOL is not replaceable. */
+const EXIT_TEST_BASE = 20_000_000n; // 0.02 SOL
 const FINALIZE_TIMEOUT_MS = 240_000;
 
 describe("vault — authorization on devnet", function () {
@@ -53,7 +56,21 @@ describe("vault — authorization on devnet", function () {
   const program = anchor.workspace.Vault as any;
   const arciumProgram = getArciumProgram(provider);
 
-  const owner = readKeypair(process.env.ANCHOR_WALLET!);
+  const payer = readKeypair(process.env.ANCHOR_WALLET!);
+  /**
+   * A wallet that has never existed before this run, funded from the payer.
+   *
+   * This suite used to run as the payer itself, which made it depend on the
+   * history of one long-lived devnet wallet: that wallet's vault was created
+   * before two account-layout changes and now fails to deserialize, so the
+   * whole file died in `before all` with error 3003 through no fault of the
+   * code under test. A vault created this run is always the current layout.
+   *
+   * `tests/e2e-devnet.ts` already did it this way. The cost is a few cents of
+   * devnet rent per run, and the benefit is a suite whose result depends only
+   * on the program.
+   */
+  const owner = Keypair.generate();
   const vault = PublicKey.findProgramAddressSync(
     [VAULT_SEED, owner.publicKey.toBuffer()], program.programId)[0];
   const strategyPda = PublicKey.findProgramAddressSync(
@@ -132,6 +149,20 @@ describe("vault — authorization on devnet", function () {
       return;
     }
 
+    // Rent and fees for a wallet that starts with nothing.
+    await web3Pkg.sendAndConfirmTransaction(
+      provider.connection,
+      new web3Pkg.Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: owner.publicKey,
+          lamports: 150_000_000,
+        })
+      ),
+      [payer],
+      { commitment: "confirmed" }
+    );
+
     if (!(await provider.connection.getAccountInfo(vault))) {
       await program.methods.initializeVault({
         maxTradeBps: 1_000, maxSlippageBps: 50, dailyLossLimitBps: 500,
@@ -162,6 +193,15 @@ describe("vault — authorization on devnet", function () {
       .getTokenAccountBalance(vaultQuote)
       .catch(() => null);
     if (!bal || BigInt(bal.value.amount) === 0n) {
+      // Mint the test quote asset to the fresh owner first — the mint
+      // authority is the payer, and nothing else on devnet will hand it out.
+      const ownerQuote = await getOrCreateAssociatedTokenAccount(
+        provider.connection, payer, QUOTE_MINT, owner.publicKey
+      );
+      await mintTo(
+        provider.connection, payer, QUOTE_MINT, ownerQuote.address,
+        payer, Number(DEPOSIT)
+      );
       await program.methods.deposit(new BN(DEPOSIT.toString())).accountsPartial({
         owner: owner.publicKey, vaultConfig: vault, mint: QUOTE_MINT,
         ownerAta: ata(owner.publicKey, QUOTE_MINT), vaultAta: vaultQuote,
@@ -181,8 +221,6 @@ describe("vault — authorization on devnet", function () {
 
   /** Submit a strategy, then have the cluster re-encrypt it to Enc<Mxe, _>. */
   async function submitAndConvert(fields: bigint[]) {
-    const prior = await program.account.strategyState
-      .fetch(strategyPda).then((s: any) => s.mxeVersion).catch(() => 0);
     const priv = x25519.utils.randomSecretKey();
     const pub = x25519.getPublicKey(priv);
     const cipher = new RescueCipher(x25519.getSharedSecret(priv, mxePublicKey));
@@ -209,11 +247,18 @@ describe("vault — authorization on devnet", function () {
       compDefAccount: getCompDefAccAddress(program.programId,
         Buffer.from(getCompDefAccOffset("store_strategy_v2")).readUInt32LE()),
     }), "convert_strategy");
-    // The version advancing IS the callback's effect — an unambiguous signal
-    // that does not depend on a websocket staying up.
-    await settle("convert_strategy", async () =>
-      (await program.account.strategyState.fetch(strategyPda)).mxeVersion > prior
-    );
+    // The *ciphertext* appearing is the callback's effect, and it is the only
+    // unambiguous one. `mxeVersion` goes non-zero when convert_strategy queues
+    // the computation — waiting on that returned immediately and every later
+    // test then failed with StrategyNotConverted against a strategy that was
+    // still converting.
+    await settle("convert_strategy", async () => {
+      const st = await program.account.strategyState.fetch(strategyPda);
+      const armed = (st.mxeCiphertexts as number[][]).some((c: number[]) =>
+        c.some((b: number) => b !== 0)
+      );
+      return armed && st.mxeVersion > 0;
+    });
   }
 
   /**
@@ -256,6 +301,64 @@ describe("vault — authorization on devnet", function () {
     return program.account.tradeIntent.fetch(intentPda);
   }
 
+  /**
+   * Put a little wrapped SOL in the vault so a sell has something to sell.
+   *
+   * The circuit sizes a sell from `base_value`, so with an empty base balance
+   * every sell branch returns amount 0 and the callback writes no intent —
+   * which is indistinguishable from the branch not firing. Without this, a
+   * SELL test would pass for the wrong reason.
+   */
+  async function ensureBase(min: bigint): Promise<bigint> {
+    const vaultBase = ata(vault, BASE_MINT, true);
+    const held = await provider.connection
+      .getTokenAccountBalance(vaultBase)
+      .then((r: any) => BigInt(r.value.amount))
+      .catch(() => 0n);
+    if (held >= min) return held;
+
+    const ownerBase = ata(owner.publicKey, BASE_MINT);
+    const need = min - held;
+    const tx = new web3Pkg.Transaction().add(
+      // Idempotent: the ATA usually exists by the second run.
+      new web3Pkg.TransactionInstruction({
+        programId: ATA_PROGRAM,
+        keys: [
+          { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+          { pubkey: ownerBase, isSigner: false, isWritable: true },
+          { pubkey: owner.publicKey, isSigner: false, isWritable: false },
+          { pubkey: BASE_MINT, isSigner: false, isWritable: false },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: TOKEN_PROGRAM, isSigner: false, isWritable: false },
+        ],
+        data: Buffer.from([1]), // CreateIdempotent
+      }),
+      SystemProgram.transfer({
+        fromPubkey: owner.publicKey, toPubkey: ownerBase,
+        lamports: Number(need),
+      }),
+      // SyncNative — makes the lamports show up as a token balance.
+      new web3Pkg.TransactionInstruction({
+        programId: TOKEN_PROGRAM,
+        keys: [{ pubkey: ownerBase, isSigner: false, isWritable: true }],
+        data: Buffer.from([17]),
+      })
+    );
+    await provider.sendAndConfirm(tx, [owner], { commitment: "confirmed" });
+
+    await program.methods.deposit(new BN(need.toString())).accountsPartial({
+      owner: owner.publicKey, vaultConfig: vault, mint: BASE_MINT,
+      ownerAta: ownerBase, vaultAta: vaultBase, tokenProgram: TOKEN_PROGRAM,
+    }).signers([owner]).rpc({ commitment: "confirmed" });
+
+    const after = await provider.connection
+      .getTokenAccountBalance(vaultBase)
+      .then((r: any) => BigInt(r.value.amount));
+    expect(after >= min, "vault must actually hold base for a sell to be meaningful")
+      .to.equal(true);
+    return after;
+  }
+
   it("converts the submitted strategy to MXE-encrypted state", async () => {
     const p = await livePrice();
     await submitAndConvert([p + usd(10), NEVER_SELL, NEVER_BUY]);
@@ -295,6 +398,55 @@ describe("vault — authorization on devnet", function () {
     // Unchanged: the callback returned early without touching the intent.
     expect(intent.amountIn.toString()).to.equal(before.amountIn.toString());
     expect(intent.expiresAtSlot.toString()).to.equal(before.expiresAtSlot.toString());
+  });
+
+  /**
+   * The take-profit branch. `tests/strategy-engine.ts` used to cover this
+   * against an interface that no longer exists — `evaluate_strategy` took the
+   * vault's value as a caller argument back then, which is exactly the lie the
+   * current design removed. Ported here rather than dropped: nothing else
+   * exercises a sell, and a strategy engine whose only tested branch is "buy"
+   * is half tested.
+   */
+  it("authorizes a sell when the price is above the exit threshold", async () => {
+    const p = await livePrice();
+    const held = await ensureBase(EXIT_TEST_BASE);
+    // Exit above a price the market is already past, and an entry that can
+    // never fire, so only the sell branch can produce this.
+    await submitAndConvert([NEVER_BUY, p - usd(10), NEVER_BUY]);
+
+    const intent = await evaluate();
+    console.log(`      live ${fmt(p)} > exit ${fmt(p - usd(10))} -> side ${intent.side}, ${intent.amountIn} lamports`);
+
+    expect(intent.side, "expected a SELL authorization").to.equal(2);
+    expect(intent.consumed).to.equal(false);
+
+    // Sized from the base balance, not the quote balance. Sizing a sell off
+    // the quote side is the specific defect this assertion exists to catch:
+    // it asks a SOL sale to be denominated in USDC.
+    const expected = (held * BigInt(SIZE_BPS)) / 10_000n;
+    expect(intent.amountIn.toString(),
+      "a sell must be sized from the base balance").to.equal(expected.toString());
+  });
+
+  /**
+   * The stop-loss branch, and the one asymmetry in the circuit: a stop exits
+   * the *whole* position rather than the configured fraction.
+   */
+  it("exits the whole position when the stop is hit", async () => {
+    const p = await livePrice();
+    const held = await ensureBase(EXIT_TEST_BASE);
+    // Stop above the live price fires; the entry below it would also fire, and
+    // must lose — a price under the stop is under the entry too, and reading
+    // that as a buy would have the vault double down on the way out.
+    await submitAndConvert([p + usd(10), NEVER_SELL, p + usd(5)]);
+
+    const intent = await evaluate();
+    console.log(`      live ${fmt(p)} < stop ${fmt(p + usd(5))} -> side ${intent.side}, ${intent.amountIn} lamports`);
+
+    expect(intent.side, "a stop must sell, never buy").to.equal(2);
+    expect(intent.amountIn.toString(),
+      "a stop exits the whole position, not a fraction").to.equal(held.toString());
   });
 
   /** Replacing the strategy must invalidate an authorization still in flight. */

@@ -213,7 +213,17 @@ export async function readMxeVersion(
   const s: any = await (program.account as any).strategyState
     .fetch(deriveStrategyPda(vault))
     .catch(() => null);
-  return s ? Number(s.mxeVersion) : 0;
+  if (!s) return 0;
+
+  // `convert_strategy` sets mxeVersion when it *queues* the computation, so the
+  // version alone goes non-zero the moment the transaction lands — before the
+  // cluster has produced anything. Reporting that as armed would be exactly the
+  // premature "encrypted on chain" claim this polling exists to avoid. The
+  // ciphertext is the only honest signal that the callback ran.
+  const hasCiphertext = (s.mxeCiphertexts as number[][]).some((c: number[]) =>
+    c.some((b: number) => b !== 0)
+  );
+  return hasCiphertext ? Number(s.mxeVersion) : 0;
 }
 
 /**

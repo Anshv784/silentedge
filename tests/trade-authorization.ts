@@ -23,7 +23,7 @@ import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-tok
 import { assert, expect } from "chai";
 
 import { Vault } from "../target/types/vault";
-import { BASE_MINT, QUOTE_MINT, VAULT_SEED as VAULT_SEED_STR } from "@silentedge/config";
+import { BASE_MINT, QUOTE_MINT, VAULT_PROGRAM_ID, VAULT_SEED as VAULT_SEED_STR } from "@silentedge/config";
 
 const VAULT_SEED = Buffer.from(VAULT_SEED_STR);
 const STRATEGY_SEED = Buffer.from("strategy");
@@ -40,6 +40,15 @@ const ARCIUM_PROGRAM = new PublicKey("Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFd
 const CLUSTER_PDA_SEED = Buffer.from("Cluster");
 const EXPECTED_CLUSTER_OFFSET = 456;
 
+/**
+ * Arcium PDA derivations, mirrored locally.
+ *
+ * The @arcium-hq/client helpers are the source of truth, but this suite runs on
+ * @coral-xyz/anchor and mixing the two clients has bitten this project before.
+ * These are pure seed derivations and are asserted against the real MXE on the
+ * fork by the callback itself: a wrong address fails account validation, which
+ * is loud.
+ */
 describe("vault — trade authorization", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -131,27 +140,47 @@ describe("vault — trade authorization", () => {
    * offset is what stops an operator who migrated the MXE from minting
    * attestations this program would accept. See THREAT_MODEL T-37.
    */
-  it("pins the accepted cluster to a compiled-in constant", async () => {
+  /**
+   * Cluster pinning — STRUCTURAL ONLY. Read this before trusting it.
+   *
+   * T-37 is the most custody-critical check in the program: Arcium derives
+   * cluster_account from mxe_account, so it silently follows a migrate-cluster,
+   * and verify_output then validates a BLS signature against whatever cluster
+   * it is handed. The pin is what stops an operator who migrated the MXE from
+   * minting attestations this program accepts as genuine.
+   *
+   * This test does NOT detect the pin's removal, and saying so is the point.
+   * The previous version claimed to and did not — it asserted only that the IDL
+   * carried a `clusterAccount`, which Arcium's macro emits unconditionally, and
+   * a mutation run confirmed it still passed with the pin deleted.
+   *
+   * A runtime detector needs the callback invoked with a foreign cluster. Three
+   * approaches failed: Anchor's TypeScript coder cannot build the argument
+   * (`SignedComputationOutputs<O>` is a generic enum), a hand-encoded Failure
+   * variant is refused with InstructionDidNotDeserialize, and every other
+   * Arcium account constraint must pass before the handler runs at all.
+   *
+   * So: the derivation is proven by a Rust unit test (`programs/vault` —
+   * `pins_the_expected_cluster`), the constant is proven to be cfg-split per
+   * network, and the *call site* is unverified. Recorded as CODED, not
+   * ENFORCED, in SECURITY_AUDIT.md.
+   */
+  it("derives the pinned cluster and keeps a cluster account on both callbacks", async () => {
     const expected = PublicKey.findProgramAddressSync(
       [CLUSTER_PDA_SEED, Buffer.from(new Uint32Array([EXPECTED_CLUSTER_OFFSET]).buffer)],
       ARCIUM_PROGRAM
     )[0];
+    expect(expected.toBase58()).to.be.a("string");
 
-    // Both callbacks must carry the same pin; a callback that skipped it would
-    // be the hole. Asserted against the IDL so a refactor that drops the check
-    // from one of them is visible.
     const idl: any = program.idl;
-    const callbacks = idl.instructions.filter((i: any) =>
-      /callback/i.test(i.name)
-    );
-    expect(callbacks.length, "expected two verified callbacks").to.be.greaterThan(0);
+    const callbacks = idl.instructions.filter((i: any) => /callback/i.test(i.name));
+    expect(callbacks.length, "expected two verified callbacks").to.equal(2);
     for (const cb of callbacks) {
       expect(
         cb.accounts.map((a: any) => a.name),
-        `${cb.name} must take a cluster account to pin`
+        `${cb.name} must take a cluster account`
       ).to.include("clusterAccount");
     }
-    expect(expected.toBase58()).to.be.a("string");
   });
 
   // ------------------------------------------------------- no authorization
@@ -387,12 +416,64 @@ describe("vault — trade authorization", () => {
    * wrong strands every vault — including `withdraw`, which is the one path
    * that must never break.
    */
-  it("keeps VaultConfig the same size when fields are carved from the reserve", async () => {
-    const { vault } = await setupVault();
+  it("keeps every VaultConfig field at the offset it already had", async () => {
+    const { owner, vault } = await setupVault();
     const info = await connection.getAccountInfo(vault);
-    // 8 discriminator + 3 pubkeys + RiskLimits(20) + status + bump + nonce
-    // + last_trade_ts + listed + name(32) + reserved(29)
-    expect(info!.data.length).to.equal(8 + 96 + 20 + 1 + 1 + 8 + 8 + 1 + 32 + 29);
+    const d = info!.data;
+
+    // Size alone is not the invariant, and asserting only size is what let a
+    // real violation through: two fields were once inserted *ahead* of `listed`
+    // and `name`, keeping the struct the same length while shifting both four
+    // bytes. Every vault created in between would have read its listing flag
+    // out of the wrong place. Offsets are the thing that must not move.
+    const OWNER = 8;
+    const BASE_MINT_OFF = 40;
+    const QUOTE_MINT_OFF = 72;
+    const LIMITS = 104;      // RiskLimits, 20 bytes
+    const STATUS = 124;
+    const BUMP = 125;
+    const NONCE = 126;
+    const LAST_TRADE_TS = 134;
+    const LISTED = 142;
+    const NAME = 143;
+    const TOTAL = 8 + 96 + 20 + 1 + 1 + 8 + 8 + 1 + 32 + 2 + 2 + 25;
+
+    expect(d.length, "total size must not change").to.equal(TOTAL);
+    expect(new PublicKey(d.subarray(OWNER, OWNER + 32)).toBase58()).to.equal(
+      owner.publicKey.toBase58()
+    );
+    expect(new PublicKey(d.subarray(BASE_MINT_OFF, BASE_MINT_OFF + 32)).toBase58())
+      .to.equal(BASE_MINT.toBase58());
+    expect(new PublicKey(d.subarray(QUOTE_MINT_OFF, QUOTE_MINT_OFF + 32)).toBase58())
+      .to.equal(QUOTE_MINT.toBase58());
+    expect(d.readUInt16LE(LIMITS), "max_trade_bps starts RiskLimits").to.equal(1_000);
+    expect(d[STATUS], "Active").to.equal(0);
+    expect(d.readBigUInt64LE(NONCE).toString(), "fresh vault nonce").to.equal("0");
+    expect(d.readBigInt64LE(LAST_TRADE_TS).toString(), "never traded").to.equal("0");
+    expect(d[LISTED], "listed defaults false").to.equal(0);
+    expect(d[NAME], "name defaults empty").to.equal(0);
+
+    // Positive control. Every field after `limits` is zero on a fresh vault, so
+    // an offset shift would still satisfy the assertions above by reading the
+    // wrong zeroes — which is precisely how a real shift survived this test
+    // once. Write non-zero bytes and check they land where they belong.
+    const name = Buffer.alloc(32);
+    Buffer.from("offset-probe").copy(name);
+    await (program.methods as any)
+      .setListing(true, Array.from(name))
+      .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+
+    const after = (await connection.getAccountInfo(vault))!.data;
+    expect(after[LISTED], "listed must sit exactly here").to.equal(1);
+    expect(
+      after.subarray(NAME, NAME + 12).toString("utf8"),
+      "the name must start exactly here"
+    ).to.equal("offset-probe");
+    // And the fields carved after it must still be untouched zeroes.
+    expect(after.readUInt16LE(175), "max_base_exposure_bps offset").to.equal(0);
+    expect(after.readUInt16LE(177), "min_trade_bps offset").to.equal(0);
   });
 
   // ------------------------------------------------------------- following

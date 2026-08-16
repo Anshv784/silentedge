@@ -113,4 +113,10 @@ pub enum VaultError {
 
     #[msg("Trade is too small to be worth its costs")]
     TradeTooSmall,
+
+    #[msg("Swap reduced the destination balance")]
+    DestinationDrained,
+
+    #[msg("The strategy was replaced while this conversion was in flight")]
+    StrategySuperseded,
 }

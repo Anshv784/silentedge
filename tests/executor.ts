@@ -22,6 +22,7 @@ import {
 
 const vault = (over: Partial<VaultView> = {}): VaultView => ({
   address: "V",
+  baseBalance: 0n,
   status: 0,
   nonce: 5n,
   lastTradeTs: 0n,
@@ -31,6 +32,7 @@ const vault = (over: Partial<VaultView> = {}): VaultView => ({
 
 const strategy = (over: Partial<StrategyView> = {}): StrategyView => ({
   mxeVersion: 3,
+  armed: true,
   ...over,
 });
 
@@ -89,7 +91,7 @@ describe("executor decisions", () => {
   it("spends a live authorization even at strategy version zero", () => {
     const d = decide({
       vault: vault(),
-      strategy: strategy({ mxeVersion: 0 }),
+      strategy: strategy({ mxeVersion: 0, armed: false }),
       intent: intent({ strategyVersion: 0 }),
       ...base,
     });
@@ -111,14 +113,23 @@ describe("executor decisions", () => {
    * evaluating one would fail on StrategyNotConverted after being paid for.
    */
   it("waits for the owner to convert a strategy rather than paying to fail", () => {
-    for (const s of [null, strategy({ mxeVersion: 0 })]) {
+    // The third case is the one that is easy to get wrong: `convert_strategy`
+    // claims `mxeVersion` when it queues the computation, so a conversion in
+    // flight looks converted to anything testing the version alone. Evaluating
+    // there is refused on chain, and paying for a computation that cannot
+    // succeed is the mild half — reporting it as armed is the other half.
+    for (const s of [
+      null,
+      strategy({ mxeVersion: 0, armed: false }),
+      strategy({ mxeVersion: 7, armed: false }),
+    ]) {
       const d = decide({ vault: vault(), strategy: s, intent: null, ...base });
       expect(d.action).to.equal("skip");
       expect(d.reason).to.match(/convert/i);
     }
   });
 
-  it("holds off during a cooldown, and resumes after it", () => {
+  it("holds off during a cooldown while flat, and resumes after it", () => {
     const v = vault({ lastTradeTs: 9_990n, cooldownSeconds: 60 }); // 10s ago
     expect(decide({ vault: v, strategy: strategy(), intent: null, ...base }).action)
       .to.equal("skip");
@@ -138,6 +149,39 @@ describe("executor decisions", () => {
     const v = vault({ lastTradeTs: 9_990n, cooldownSeconds: 3_600 });
     const d = decide({ vault: v, strategy: strategy(), intent: intent(), ...base });
     expect(d.action).to.equal("execute");
+  });
+
+  /**
+   * The cooldown must not disarm the stop-loss.
+   *
+   * Only an evaluation can mint a SELL, so an executor that skips evaluating
+   * for the whole cooldown cannot produce an exit for the whole cooldown — the
+   * longer the owner sets it for safety, the longer their stop is off. The
+   * program is deliberately built the other way round: exits are exempt from
+   * the cooldown, and this restores the same asymmetry off chain.
+   *
+   * This is the detector for that. Delete the `nothingToExit` guard in
+   * decide.ts and this test goes red while every other cooldown test stays
+   * green, because they all run flat.
+   */
+  it("keeps evaluating during a cooldown while a position is open", () => {
+    const holding = vault({
+      lastTradeTs: 9_990n, // 10s ago
+      cooldownSeconds: 3_600,
+      baseBalance: 1n,
+    });
+    const d = decide({ vault: holding, strategy: strategy(), intent: null, ...base });
+    expect(
+      d.action,
+      "a cooldown must not stop the vault looking for an exit"
+    ).to.equal("evaluate");
+
+    // Same vault, same cooldown, no position: nothing to exit, so the cooldown
+    // does suppress it. This pairing is what makes the assertion above specific
+    // to the stop-loss rather than to cooldowns being ignored generally.
+    const flat = { ...holding, baseBalance: 0n };
+    expect(decide({ vault: flat, strategy: strategy(), intent: null, ...base }).action)
+      .to.equal("skip");
   });
 
   it("does not pay for evaluations faster than the interval", () => {

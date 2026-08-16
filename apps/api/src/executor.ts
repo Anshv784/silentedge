@@ -147,8 +147,19 @@ async function readVault(ctx: Ctx, vault: PublicKey) {
     .fetch(intentPda)
     .catch(() => null);
 
+  // The stop-loss depends on this: decide() suppresses evaluation during a
+  // cooldown only when there is nothing to sell, so a wrong reading here can
+  // disarm an exit. Treat an unreadable balance as a position held rather than
+  // as flat — evaluating unnecessarily costs a computation fee, not a stop.
+  const baseAta = ata.getAssociatedTokenAddressSync(v.baseMint, vault, true);
+  const baseBalance = await ctx.connection
+    .getTokenAccountBalance(baseAta)
+    .then((r) => BigInt(r.value.amount))
+    .catch(() => 1n);
+
   const vaultView: VaultView = {
     address: vault.toBase58(),
+    baseBalance,
     status: typeof v.status === "object" ? Object.keys(v.status)[0] === "active" ? 0
       : Object.keys(v.status)[0] === "paused" ? 1 : 2 : Number(v.status),
     nonce: BigInt(v.nonce.toString()),
@@ -156,7 +167,14 @@ async function readVault(ctx: Ctx, vault: PublicKey) {
     cooldownSeconds: Number(v.limits.cooldownSeconds),
   };
   const strategyView: StrategyView | null = strategy
-    ? { mxeVersion: Number(strategy.mxeVersion) }
+    ? {
+        mxeVersion: Number(strategy.mxeVersion),
+        armed:
+          Number(strategy.mxeVersion) > 0 &&
+          (strategy.mxeCiphertexts as number[][]).some((c) =>
+            c.some((b) => b !== 0)
+          ),
+      }
     : null;
   const intentView: IntentView | null = intent
     ? {

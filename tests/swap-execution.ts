@@ -248,7 +248,7 @@ describe("vault — swap execution against forked mainnet", function () {
    */
   async function seedIntent(fields: {
     side?: number; amountIn?: bigint; consumed?: boolean; expiresIn?: number;
-    nonceDelta?: bigint;
+    nonceDelta?: bigint; oraclePrice?: bigint;
   } = {}) {
     const existing = (await connection.getAccountInfo(intentPda))!;
     const d = Buffer.from(existing.data);
@@ -264,7 +264,7 @@ describe("vault — swap execution against forked mainnet", function () {
     d.writeBigUInt64LE(BigInt(slot + (fields.expiresIn ?? 150)), o); o += 8;
     d.writeBigUInt64LE(BigInt(vc.nonce.toString()) + (fields.nonceDelta ?? 0n), o); o += 8;
     d.writeUInt32LE(ss.mxeVersion, o); o += 4;
-    d.writeBigUInt64LE(0n, o); o += 8; // oracle_price: set at execution
+    d.writeBigUInt64LE(fields.oraclePrice ?? 0n, o); o += 8; // price at decision
     d.writeUInt8(fields.consumed ? 1 : 0, o);
 
     // hex, not base64 — surfnet_setAccount rejects base64 outright.
@@ -351,6 +351,22 @@ describe("vault — swap execution against forked mainnet", function () {
     const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
     await connection.confirmTransaction(sig, "confirmed");
     return sig;
+  }
+
+  /**
+   * The oracle price as `execute_trade` will normalise it: USD at six decimals.
+   * Read from the same fixture bytes the program reads, so the deviation tests
+   * below can express a decision price as a percentage of the live one without
+   * hardcoding a number that the fixture could drift away from.
+   */
+  async function livePrice(): Promise<bigint> {
+    const d = (await connection.getAccountInfo(PYTH_SOL_USD))!.data;
+    const raw = d.readBigInt64LE(73);
+    const exponent = d.readInt32LE(89);
+    const shift = exponent + 6; // PRICE_DECIMALS
+    return shift >= 0
+      ? raw * 10n ** BigInt(shift)
+      : raw / 10n ** BigInt(-shift);
   }
 
   const bal = async (a: PublicKey) =>
@@ -484,6 +500,78 @@ describe("vault — swap execution against forked mainnet", function () {
    * confidence, or simply let the timestamp age, and the program must refuse
    * rather than trade on a number it should not trust.
    */
+  /**
+   * The execution-time deviation band, on entries.
+   *
+   * This bounds staleness of the *decision*, which nothing else does. The
+   * output floor is re-derived from a fresh oracle read, so it always tracks
+   * the market and says nothing about how far the market moved since the
+   * strategy decided; `expires_at_slot` bounds elapsed slots, not elapsed
+   * price. Without this check an executor could hold an authorization for its
+   * whole window and fire it after a large move — and `max_oracle_deviation_bps`
+   * was a settable, range-checked, UI-displayed number that nothing read.
+   *
+   * The band here is 200 bps (see `setLimits`).
+   */
+  it("refuses an entry filled far above the price it was decided at", async () => {
+    // Top up first: earlier tests drain the quote balance, and TRADE_IN is
+    // exactly max_trade_bps of DEPOSIT, so a short balance trips the size cap
+    // before the deviation check is ever reached.
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    const live = await livePrice();
+    // The decision was made 5% below where the market now is: a 500 bps rise
+    // against a 200 bps band.
+    await seedIntent({ oraclePrice: (live * 9_500n) / 10_000n });
+
+    const si = await route(TRADE_IN);
+    try {
+      await execute(si);
+      expect.fail("filled an entry far above the decision price");
+    } catch (e) {
+      expect(String(e)).to.match(/OracleDeviationTooLarge/);
+    }
+  });
+
+  it("allows an entry that moved less than the band", async () => {
+    // Top up first: earlier tests drain the quote balance, and TRADE_IN is
+    // exactly max_trade_bps of DEPOSIT, so a short balance trips the size cap
+    // before the deviation check is ever reached.
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    const live = await livePrice();
+    // 100 bps of rise against a 200 bps band — the same trade, inside it.
+    await seedIntent({ oraclePrice: (live * 9_900n) / 10_000n });
+
+    const qBefore = await bal(vaultQuote);
+    await execute(await route(TRADE_IN));
+    expect(qBefore - (await bal(vaultQuote)), "the entry should have gone through")
+      .to.equal(TRADE_IN);
+  });
+
+  /**
+   * The asymmetry, and the reason for it.
+   *
+   * A stop fires *because* the price fell. Applying the band to exits would
+   * mean the further it fell, the more certainly the vault refused to sell —
+   * the downside control disarming itself in the exact move it exists for.
+   * This is the same mistake the size cap made until it was found; this test
+   * is here so the band cannot repeat it.
+   */
+  it("never blocks an exit, however far the price has fallen", async () => {
+    const held = 2_000_000_000n;
+    await setToken(vault, WSOL, held);
+    await refreshOracle();
+    const live = await livePrice();
+    // Decided at double the current price: a 50% adverse move, 5000 bps
+    // against a 200 bps band. A capped exit would refuse this.
+    await seedIntent({ side: SIDE_SELL, amountIn: held, oraclePrice: live * 2n });
+
+    await execute(await route(held, SIDE_SELL));
+    expect((await bal(vaultBase)).toString(), "the stop must still get out")
+      .to.equal("0");
+  });
+
   it("refuses to trade on a stale price", async () => {
     await setToken(vault, USDC, DEPOSIT);
     // Deliberately NOT refreshing the oracle: the forked account ages against
@@ -640,6 +728,82 @@ describe("vault — swap execution against forked mainnet", function () {
       expect(String(e)).to.match(/TradeTooSmall/);
     } finally {
       await setExposure(0, 0);
+    }
+  });
+
+  /**
+   * Pausing must stop trading, and `VaultNotActive` appeared nowhere in the
+   * execution tests — the status check on `execute_trade` was the vault's
+   * emergency brake with nothing pulling on it. A permissionless executor makes
+   * this the only way an owner can halt a running strategy without withdrawing.
+   */
+  it("refuses to trade a paused vault", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    await seedIntent();
+    const si = await route(TRADE_IN);
+
+    await program.methods.pause()
+      .accountsPartial({ authority: owner.publicKey, vaultConfig: vault })
+      .signers([owner]).rpc();
+    try {
+      await execute(si);
+      expect.fail("traded a paused vault");
+    } catch (e) {
+      expect(String(e)).to.match(/VaultNotActive/);
+    } finally {
+      await program.methods.resume()
+        .accountsPartial({ authority: owner.publicKey, vaultConfig: vault })
+        .signers([owner]).rpc();
+    }
+
+    // And the brake releases — otherwise this test would also pass if pause
+    // were permanent, which is `stop`, a different instruction.
+    await seedIntent();
+    await refreshOracle();
+    await execute(await route(TRADE_IN));
+  });
+
+  /**
+   * The per-trade cap, on the entry side where it applies.
+   *
+   * `TradeTooLarge` had no detector either. The cap is what bounds how much one
+   * decision can put at risk, and it is the check that had to be *removed* from
+   * exits to stop it rejecting every stop-loss — so it is worth proving it
+   * still binds on the side it was kept for.
+   */
+  it("refuses an entry above the per-trade cap", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    // max_trade_bps is 1000 (10%), and TRADE_IN is exactly that. One unit over
+    // the line is the whole assertion: a test that passes with a wildly
+    // oversized amount would also pass against a much looser cap.
+    const overCap = (DEPOSIT * 1_000n) / 10_000n + 1n;
+    await seedIntent({ amountIn: overCap });
+    try {
+      await execute(await route(overCap));
+      expect.fail("filled an entry above the per-trade cap");
+    } catch (e) {
+      expect(String(e)).to.match(/TradeTooLarge/);
+    }
+  });
+
+  /**
+   * An authorization for more than the vault holds. Distinct from the cap: the
+   * cap is a policy the owner sets, this is arithmetic that must hold whatever
+   * the policy says, and it is what stops a swap being attempted against a
+   * balance that is not there.
+   */
+  it("refuses to spend more than the vault holds", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    const tooMuch = DEPOSIT + 1n;
+    await seedIntent({ amountIn: tooMuch });
+    try {
+      await execute(await route(tooMuch));
+      expect.fail("spent more than the vault held");
+    } catch (e) {
+      expect(String(e)).to.match(/InsufficientSourceBalance/);
     }
   });
 

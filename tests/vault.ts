@@ -511,6 +511,62 @@ describe("vault — custody", () => {
    * Checks the actual bytes of the confirmed transaction and of the stored
    * account, rather than trusting that encryption happened upstream.
    */
+  /**
+   * Replacing a strategy must stop the previous one trading.
+   *
+   * `mxe_version` is what a trade authorization binds to, and what evaluation
+   * requires to be non-zero — so before this was fixed, submitting a
+   * replacement left the converted copy of the *old* strategy armed and
+   * trading, and an owner submitting a deliberately inert strategy to stop
+   * their bot would have been silently ignored. The doc comment on
+   * `StrategyState::version` asserted the opposite of what the code did.
+   *
+   * The MXE fields are seeded directly rather than by running a conversion,
+   * because a conversion needs the cluster and this is a local test. That is
+   * sound here: the point under test is what `submit_strategy` does to those
+   * bytes, not how they came to be set.
+   */
+  it("retires the converted strategy when a replacement is submitted", async () => {
+    const { owner } = await setupVault(0);
+    const strategyAcc = strategyPda(vaultPda(owner.publicKey));
+    await submitIx(owner, encryptedDraft().e).rpc();
+
+    // disc 8 + vault 32 + ciphertexts 96 + nonce 16 + enc_pubkey 32
+    // + version 4 + bump 1 + follows 32 + reserved 0 = 221
+    const MXE_CIPHERTEXTS = 221;
+    const MXE_NONCE = 317;
+    const MXE_VERSION = 333;
+
+    const acc = (await connection.getAccountInfo(strategyAcc))!;
+    const armed = Buffer.from(acc.data);
+    armed.fill(0xab, MXE_CIPHERTEXTS, MXE_NONCE); // a converted strategy
+    armed.writeUInt32LE(7, MXE_VERSION);
+    const res = await (connection as any)._rpcRequest("surfnet_setAccount", [
+      strategyAcc.toBase58(),
+      { data: armed.toString("hex"), owner: acc.owner.toBase58(),
+        lamports: acc.lamports, executable: false },
+    ]);
+    expect(res.error, `cheatcode failed: ${JSON.stringify(res.error)}`).to.be.undefined;
+
+    const seeded = await program.account.strategyState.fetch(strategyAcc);
+    expect(seeded.mxeVersion, "fixture must actually arm the strategy").to.equal(7);
+
+    await submitIx(owner, encryptedDraft().e).rpc();
+
+    const after = await program.account.strategyState.fetch(strategyAcc);
+    expect(after.mxeVersion, "replacing a strategy must disarm the old one").to.equal(0);
+    expect(
+      Buffer.from((after.mxeCiphertexts as number[][]).flat()).every((b) => b === 0),
+      "the old converted ciphertext must not survive a replacement"
+    ).to.be.true;
+    expect(after.mxeNonce.toString()).to.equal("0");
+
+    // And the plaintext submission did land, so this is a retirement rather
+    // than the instruction having failed.
+    expect(after.version, "the submission itself must still have applied")
+      .to.be.greaterThan(0);
+  });
+
   it("puts no plaintext strategy value on chain", async () => {
     const { owner, vault } = await setupVault(0);
     const { normalized, e } = encryptedDraft();
