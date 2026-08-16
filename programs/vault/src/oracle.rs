@@ -47,11 +47,23 @@ pub const PRICE_DECIMALS: i32 = 6;
 pub const MIN_REASONABLE_PRICE: u64 = 1_000_000; // $1
 pub const MAX_REASONABLE_PRICE: u64 = 10_000_000_000; // $10,000
 
+/// A validated price and its confidence, both at `PRICE_DECIMALS`.
+///
+/// The confidence used to be computed for the ratio check and then thrown away,
+/// so the output floor was derived from the point estimate alone. That let
+/// oracle uncertainty quietly widen the band a swap may fill inside, on top of
+/// the slippage the owner actually chose. Carrying it lets the floor be taken
+/// at the end of the interval that does not favour the counterparty.
+pub struct OraclePrice {
+    pub price: u64,
+    pub conf: u64,
+}
+
 /// Read, validate, and normalise the SOL/USD price to 6 decimals.
 ///
 /// Every failure here is a refusal to trade, never a fallback to a default. A
 /// bot that trades on a bad price is worse than a bot that does not trade.
-pub fn read_sol_usd_price(price_update: &Account<PriceUpdateV2>) -> Result<u64> {
+pub fn read_sol_usd_price(price_update: &Account<PriceUpdateV2>) -> Result<OraclePrice> {
     let feed_id = get_feed_id_from_hex(SOL_USD_FEED_ID)?;
 
     // Fails on a stale update and on a wrong feed. Both are refusals, and both
@@ -75,13 +87,14 @@ pub fn read_sol_usd_price(price_update: &Account<PriceUpdateV2>) -> Result<u64> 
     require!(conf_bps <= MAX_CONF_BPS, OracleError::ConfidenceTooWide);
 
     let scaled = scale_to_price_decimals(raw, price.exponent)?;
+    let conf = scale_to_price_decimals(price.conf as u128, price.exponent)?;
 
     require!(
         (MIN_REASONABLE_PRICE..=MAX_REASONABLE_PRICE).contains(&scaled),
         OracleError::PriceOutOfBand
     );
 
-    Ok(scaled)
+    Ok(OraclePrice { price: scaled, conf })
 }
 
 /// Convert a Pyth `(value, exponent)` pair into our fixed-point scale.
@@ -132,9 +145,18 @@ pub fn scale_to_price_decimals(value: u128, exponent: i32) -> Result<u64> {
 pub fn oracle_min_out(
     side: u8,
     amount_in: u64,
-    price: u64,
+    oracle: &OraclePrice,
     max_slippage_bps: u16,
 ) -> Result<u64> {
+    // Take the end of the confidence interval that yields the *larger* floor,
+    // so uncertainty can never be spent as extra slippage. `max_conf_bps` caps
+    // this at 1%, and SOL/USD typically publishes a few basis points, so the
+    // cost to honest fills is small against the owner's slippage allowance —
+    // while the alternative hands that width to whoever routes the swap.
+    let price = match side {
+        SIDE_BUY => oracle.price.saturating_sub(oracle.conf),
+        _ => oracle.price.saturating_add(oracle.conf),
+    };
     require!(price > 0, OracleError::NonPositivePrice);
     require!(
         max_slippage_bps < BPS_DENOMINATOR,
@@ -204,21 +226,23 @@ mod tests {
     // below a real fill, or every honest swap reverts.
 
     const P: u64 = 75_290_000; // $75.29
+    /// Zero confidence: the point price, so the numbers below stay exact.
+    fn at(price: u64) -> OraclePrice { OraclePrice { price, conf: 0 } }
     const USDC_500: u64 = 500_000_000;
 
     #[test]
     fn buy_floor_tracks_a_real_quote() {
-        let exact = oracle_min_out(SIDE_BUY, USDC_500, P, 0).unwrap();
+        let exact = oracle_min_out(SIDE_BUY, USDC_500, &at(P), 0).unwrap();
         assert_eq!(exact, 6_640_988_179); // 500e6 * 1e9 / 75_290_000
         // A real fill of 6,647,760,174 must clear a 50 bps floor.
-        let floor = oracle_min_out(SIDE_BUY, USDC_500, P, 50).unwrap();
+        let floor = oracle_min_out(SIDE_BUY, USDC_500, &at(P), 50).unwrap();
         assert!(floor < 6_647_760_174, "floor {floor} would reject an honest fill");
         assert_eq!(floor, exact * 9_950 / 10_000);
     }
 
     #[test]
     fn sell_floor_is_the_inverse() {
-        let out = oracle_min_out(SIDE_SELL, 6_647_760_174, P, 0).unwrap();
+        let out = oracle_min_out(SIDE_SELL, 6_647_760_174, &at(P), 0).unwrap();
         // Round-trips to ~500 USDC. Not exact: the lamport figure is a real
         // Jupiter fill, which beat the oracle-implied amount, so the inverse
         // comes back slightly above 500. Within 1 USDC is the check that matters.
@@ -227,25 +251,47 @@ mod tests {
 
     #[test]
     fn slippage_only_ever_lowers_the_floor() {
-        let none = oracle_min_out(SIDE_BUY, USDC_500, P, 0).unwrap();
-        let some = oracle_min_out(SIDE_BUY, USDC_500, P, 50).unwrap();
-        let lots = oracle_min_out(SIDE_BUY, USDC_500, P, 9_999).unwrap();
+        let none = oracle_min_out(SIDE_BUY, USDC_500, &at(P), 0).unwrap();
+        let some = oracle_min_out(SIDE_BUY, USDC_500, &at(P), 50).unwrap();
+        let lots = oracle_min_out(SIDE_BUY, USDC_500, &at(P), 9_999).unwrap();
         assert!(lots < some && some < none);
     }
 
     #[test]
     fn refuses_inputs_that_would_make_the_floor_meaningless() {
-        assert!(oracle_min_out(SIDE_BUY, USDC_500, 0, 50).is_err(), "zero price");
-        assert!(oracle_min_out(SIDE_BUY, USDC_500, P, 10_000).is_err(), "100% slippage");
-        assert!(oracle_min_out(0, USDC_500, P, 50).is_err(), "HOLD is not tradeable");
-        assert!(oracle_min_out(9, USDC_500, P, 50).is_err(), "unknown side");
+        assert!(oracle_min_out(SIDE_BUY, USDC_500, &at(0), 50).is_err(), "zero price");
+        assert!(oracle_min_out(SIDE_BUY, USDC_500, &at(P), 10_000).is_err(), "100% slippage");
+        assert!(oracle_min_out(0, USDC_500, &at(P), 50).is_err(), "HOLD is not tradeable");
+        assert!(oracle_min_out(9, USDC_500, &at(P), 50).is_err(), "unknown side");
+    }
+
+    /// Confidence must move the floor *up*, on both sides.
+    ///
+    /// If it moved the floor down, oracle uncertainty would be spendable as
+    /// extra slippage by whoever routes the swap — silently widening the only
+    /// window in which value can leak (THREAT_MODEL §2.1).
+    #[test]
+    fn confidence_tightens_the_floor_it_never_loosens_it() {
+        let wide = OraclePrice { price: P, conf: P / 200 }; // 50 bps
+
+        let buy_point = oracle_min_out(SIDE_BUY, USDC_500, &at(P), 0).unwrap();
+        let buy_wide = oracle_min_out(SIDE_BUY, USDC_500, &wide, 0).unwrap();
+        assert!(buy_wide > buy_point, "buy floor must rise with uncertainty");
+
+        let sell_point = oracle_min_out(SIDE_SELL, 1_000_000_000, &at(P), 0).unwrap();
+        let sell_wide = oracle_min_out(SIDE_SELL, 1_000_000_000, &wide, 0).unwrap();
+        assert!(sell_wide > sell_point, "sell floor must rise with uncertainty");
+
+        // And the effect stays small against a normal slippage allowance: at the
+        // 1% ceiling max_conf_bps permits, the floor moves ~1%, not multiples.
+        assert!(buy_wide < buy_point * 101 / 100, "conf must not dominate");
     }
 
     #[test]
     fn does_not_overflow_on_absurd_amounts() {
         // u64::MAX * 1e9 overflows u128 only above ~3.4e29; check it is handled
         // rather than wrapping into a tiny, trivially-satisfied floor.
-        let r = oracle_min_out(SIDE_BUY, u64::MAX, 1, 0);
+        let r = oracle_min_out(SIDE_BUY, u64::MAX, &at(1), 0);
         assert!(r.is_err(), "expected overflow, got {r:?}");
     }
 }

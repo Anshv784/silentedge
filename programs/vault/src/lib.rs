@@ -333,7 +333,7 @@ pub mod vault {
         // A fresh oracle read at execution time, not the one the decision used,
         // and the floor the swap must clear.
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
-        let min_out = oracle_min_out(side, amount_in, price, max_slippage_bps)?;
+        let min_out = oracle_min_out(side, amount_in, &price, max_slippage_bps)?;
 
         let vault_key = ctx.accounts.vault_config.key();
         let lamports_before = ctx.accounts.vault_config.to_account_info().lamports();
@@ -406,7 +406,7 @@ pub mod vault {
 
         let intent = &mut ctx.accounts.trade_intent;
         intent.consumed = true;
-        intent.oracle_price = price;
+        intent.oracle_price = price.price;
         intent.min_amount_out = min_out;
 
         let vault = &mut ctx.accounts.vault_config;
@@ -419,7 +419,7 @@ pub mod vault {
             amount_in,
             amount_out,
             min_amount_out: min_out,
-            oracle_price: price,
+            oracle_price: price.price,
         });
         Ok(())
     }
@@ -543,7 +543,7 @@ pub mod vault {
             .encrypted_u64(strategy.mxe_ciphertexts[0])
             .encrypted_u64(strategy.mxe_ciphertexts[1])
             .encrypted_u64(strategy.mxe_ciphertexts[2])
-            .plaintext_u64(price)
+            .plaintext_u64(price.price)
             .plaintext_u64(quote_value)
             .plaintext_u64(base_value)
             // Public, and correctly so — see RiskLimits::size_bps.
