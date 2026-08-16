@@ -66,7 +66,7 @@ An observer who records the oracle price at each evaluation and sees which ones 
 trade can bound your trigger prices from both sides. Enough observations narrow them
 arbitrarily.
 
-This is inherent to acting on a public blockchain. Jittered evaluation timing, randomised
+This is inherent to acting on a public blockchain. None of the following are implemented today; they are V2 candidates. Jittered evaluation timing, randomised
 trade sizing, and threshold bands slow it down. **Nothing prevents it.**
 
 ## 4. Emergency withdrawal

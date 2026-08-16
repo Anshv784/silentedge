@@ -43,6 +43,9 @@ export const DEFAULT_LIMITS = {
   maxOracleStalenessSec: 30,
   maxConfBps: 100, // reject prices with >1% confidence/price
   maxOracleDeviationBps: 200, // 2%
+  // Share of the spendable balance a triggered rule trades. Public, not part
+  // of the encrypted strategy — one trade recovers it exactly (T-38).
+  sizeBps: 1_000, // 10%
 };
 
 export function useProgram() {
@@ -211,6 +214,58 @@ export async function readMxeVersion(
     .fetch(deriveStrategyPda(vault))
     .catch(() => null);
   return s ? Number(s.mxeVersion) : 0;
+}
+
+/** Owner-only circuit breaker. `withdraw` keeps working in every status. */
+export async function setStatus(
+  program: Program,
+  owner: PublicKey,
+  action: "pause" | "resume" | "stop"
+): Promise<string> {
+  return (program.methods as any)[action]()
+    .accountsPartial({ authority: owner, vaultConfig: deriveVaultPda(owner) })
+    .rpc();
+}
+
+/**
+ * Replace the vault's risk envelope.
+ *
+ * Bumps the vault nonce, which invalidates any authorization already in
+ * flight — an intent carries no copy of the limits it was issued under, so
+ * without that a decision made under the old envelope would execute under the
+ * new one.
+ */
+export async function updateLimits(
+  program: Program,
+  owner: PublicKey,
+  limits: typeof DEFAULT_LIMITS
+): Promise<string> {
+  return program.methods
+    .updateLimits(limits)
+    .accountsPartial({ owner, vaultConfig: deriveVaultPda(owner) })
+    .rpc();
+}
+
+/** The vault's current limits, for pre-filling an edit. */
+export async function readLimits(
+  program: Program,
+  owner: PublicKey
+): Promise<typeof DEFAULT_LIMITS | null> {
+  const v: any = await (program.account as any).vaultConfig
+    .fetch(deriveVaultPda(owner))
+    .catch(() => null);
+  if (!v) return null;
+  const l = v.limits;
+  return {
+    maxTradeBps: Number(l.maxTradeBps),
+    maxSlippageBps: Number(l.maxSlippageBps),
+    dailyLossLimitBps: Number(l.dailyLossLimitBps),
+    cooldownSeconds: Number(l.cooldownSeconds),
+    maxOracleStalenessSec: Number(l.maxOracleStalenessSec),
+    maxConfBps: Number(l.maxConfBps),
+    maxOracleDeviationBps: Number(l.maxOracleDeviationBps),
+    sizeBps: Number(l.sizeBps),
+  };
 }
 
 /**

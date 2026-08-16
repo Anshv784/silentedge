@@ -343,7 +343,8 @@ It does **not** protect strategy ciphertext already published on-chain â€” see Â
   evaluation and sees which ones produced a BUY can bound `entry_below` from both sides.
   Enough observations narrow it arbitrarily. This is inherent to acting on-chain, not an
   Arcium weakness, and no amount of MPC fixes it. See THREAT_MODEL T-9 for partial
-  mitigations (jittered cadence, randomised size, threshold bands) and their limits.
+  candidate V2 mitigations (jittered cadence, randomised size, threshold bands),
+  none of which are implemented, and their limits.
 
 ---
 

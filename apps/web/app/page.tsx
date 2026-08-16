@@ -22,6 +22,7 @@ import {
   readMxeVersion,
   readPendingIntent,
   selfExecute,
+  setStatus,
   readableError,
   useProgram,
 } from "@/lib/vault-program";
@@ -57,6 +58,7 @@ export default function Page() {
   const [mxeVersion, setMxeVersion] = useState<number>(0);
   const [pending, setPending] = useState<{ side: number; amountIn: bigint } | null>(null);
   const [executing, setExecuting] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
 
   useEffect(() => {
     if (!connected) return;
@@ -84,6 +86,29 @@ export default function Page() {
       clearInterval(id);
     };
   }, [program, publicKey, receipts.length]);
+
+  /**
+   * Pause, resume, or stop. Owner-only, and deliberately unable to trap funds:
+   * `withdraw` never reads status, so the worst a status change can do is stop
+   * new trading.
+   */
+  async function changeStatus(action: "pause" | "resume" | "stop") {
+    if (!program || !publicKey) return;
+    if (action === "stop" &&
+        !confirm("Stop is permanent. The vault can never trade again, though you can always withdraw. Continue?")) {
+      return;
+    }
+    setStatusBusy(true);
+    setEncryptError(null);
+    try {
+      const signature = await setStatus(program, publicKey, action);
+      recordAndRefresh({ signature, action: `${action[0].toUpperCase()}${action.slice(1)} vault`, at: Date.now() });
+    } catch (e) {
+      setEncryptError(readableError(e));
+    } finally {
+      setStatusBusy(false);
+    }
+  }
 
   /**
    * Spend the pending authorization from this browser.
@@ -323,6 +348,39 @@ export default function Page() {
                         </span>
                         <span className="tabular text-[13px] capitalize">
                           {v.vaultStatus}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 py-3">
+                        {v.vaultStatus === "active" ? (
+                          <button
+                            className="border border-[var(--color-rule)] px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-paper)] disabled:opacity-40"
+                            onClick={() => changeStatus("pause")}
+                            disabled={statusBusy}
+                          >
+                            Pause trading
+                          </button>
+                        ) : null}
+                        {v.vaultStatus === "paused" ? (
+                          <button
+                            className="border border-[var(--color-rule)] px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-paper)] disabled:opacity-40"
+                            onClick={() => changeStatus("resume")}
+                            disabled={statusBusy}
+                          >
+                            Resume
+                          </button>
+                        ) : null}
+                        {v.vaultStatus !== "stopped" ? (
+                          <button
+                            className="border border-[var(--color-exposed)] px-3 py-1.5 text-[12px] text-[var(--color-exposed)] transition-opacity hover:opacity-80 disabled:opacity-40"
+                            onClick={() => changeStatus("stop")}
+                            disabled={statusBusy}
+                          >
+                            Stop permanently
+                          </button>
+                        ) : null}
+                        <span className="text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                          Withdrawals keep working in every state — pausing can
+                          never trap your funds.
                         </span>
                       </div>
                     </div>
