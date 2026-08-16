@@ -176,9 +176,24 @@ describe("vault — swap execution against forked mainnet", function () {
    * them, so the staleness guard is still doing its job on real data rather
    * than being switched off for the test.
    */
+  /**
+   * Confidence written back as a fixed, realistic 5 bps.
+   *
+   * Not the value mainnet published, on purpose. These tests rewrite the price
+   * account, the fork outlives a single run, and "remember the original" reads
+   * whatever the last run happened to leave — which is how a widened conf from
+   * the confidence test leaked into every later test and failed it on
+   * ConfidenceTooWide instead of its own assertion. A deterministic fixture is
+   * the only kind that survives a fork with memory. 5 bps is close to what
+   * SOL/USD actually publishes and well inside the 1% ceiling.
+   */
+  const FIXTURE_CONF_BPS = 5n;
+
   async function refreshOracle() {
     const acc = (await connection.getAccountInfo(PYTH_SOL_USD))!;
     const d = Buffer.from(acc.data);
+    const price = d.readBigInt64LE(73);
+    d.writeBigUInt64LE((BigInt(price) * FIXTURE_CONF_BPS) / 10_000n, 81);
     const clock = (await connection.getAccountInfo(
       new PublicKey("SysvarC1ock11111111111111111111111111111111")))!;
     const now = clock.data.readBigInt64LE(32);
@@ -189,6 +204,36 @@ describe("vault — swap execution against forked mainnet", function () {
     d.writeBigInt64LE(now, PUBLISH_TIME);
     d.writeBigInt64LE(now, PUBLISH_TIME + 8); // prev_publish_time
 
+    await rpc("surfnet_setAccount", [
+      PYTH_SOL_USD.toBase58(),
+      { data: d.toString("hex"), owner: acc.owner.toBase58(),
+        lamports: acc.lamports, executable: false },
+    ]);
+  }
+
+  /** Move the published timestamp by `deltaSeconds` (negative = older). */
+  async function ageOracle(deltaSeconds: number) {
+    const acc = (await connection.getAccountInfo(PYTH_SOL_USD))!;
+    const d = Buffer.from(acc.data);
+    const clock = (await connection.getAccountInfo(
+      new PublicKey("SysvarC1ock11111111111111111111111111111111")))!;
+    const t = clock.data.readBigInt64LE(32) + BigInt(deltaSeconds);
+    d.writeBigInt64LE(t, 93);
+    d.writeBigInt64LE(t, 101);
+    await rpc("surfnet_setAccount", [
+      PYTH_SOL_USD.toBase58(),
+      { data: d.toString("hex"), owner: acc.owner.toBase58(),
+        lamports: acc.lamports, executable: false },
+    ]);
+  }
+
+  /** Rewrite only the confidence interval, as a fraction of the price in bps. */
+  async function widenConfidence(bps: number) {
+    const acc = (await connection.getAccountInfo(PYTH_SOL_USD))!;
+    const d = Buffer.from(acc.data);
+    // disc(8) + write_authority(32) + verification_level(1) + feed_id(32) = 73
+    const price = d.readBigInt64LE(73);
+    d.writeBigUInt64LE((price * BigInt(bps)) / 10_000n, 81); // conf
     await rpc("surfnet_setAccount", [
       PYTH_SOL_USD.toBase58(),
       { data: d.toString("hex"), owner: acc.owner.toBase58(),
@@ -427,6 +472,49 @@ describe("vault — swap execution against forked mainnet", function () {
     // Leave the vault as we found it — a 3600s cooldown would otherwise make
     // every later test fail with CooldownActive instead of its own assertion.
     await setCooldown(0);
+  });
+
+  /**
+   * The oracle guards, which had no detectors at all.
+   *
+   * `ConfidenceTooWide` and `PriceTooOld` appeared zero times across tests/
+   * while THREAT_MODEL §9 listed "stale price -> rejected" and "wide
+   * confidence -> rejected" as met obligations. Both are cheap to falsify here
+   * because the fork lets the price account be rewritten: widen the published
+   * confidence, or simply let the timestamp age, and the program must refuse
+   * rather than trade on a number it should not trust.
+   */
+  it("refuses to trade on a stale price", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    // Deliberately NOT refreshing the oracle: the forked account ages against
+    // the fork's clock, which is the same condition as a stalled publisher.
+    await ageOracle(-120);
+    await seedIntent();
+    try {
+      await execute(await route(TRADE_IN));
+      expect.fail("traded on a stale price");
+    } catch (e) {
+      expect(String(e)).to.match(/PriceTooOld|price feed update's age/i);
+    } finally {
+      await refreshOracle();
+    }
+  });
+
+  it("refuses to trade when the oracle is unsure of itself", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    // 5% confidence against a 1% ceiling. Pyth widens conf exactly when
+    // publishers disagree, which is when a single number is least trustworthy.
+    await widenConfidence(500);
+    await seedIntent();
+    try {
+      await execute(await route(TRADE_IN));
+      expect.fail("traded on a price the oracle was unsure of");
+    } catch (e) {
+      expect(String(e)).to.match(/ConfidenceTooWide/);
+    } finally {
+      await refreshOracle();
+    }
   });
 
   /**

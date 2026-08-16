@@ -6,17 +6,27 @@ Create a rule-based trading bot. Your funds stay in a vault only you can withdra
 Your strategy parameters are evaluated inside multi-party computation, so they are not
 visible to the platform operator or to any single node running the computation.
 
-> **Status: in progress.** Vault program (custody, deposits, withdrawals,
-> pause/stop), the web dashboard, the strategy builder, and client-side
-> strategy encryption are built and tested against a devnet fork. On the live
-> Arcium devnet cluster, a real computation runs end to end
-> ([`docs/arcium-hello-world.md`](docs/arcium-hello-world.md)) and a strategy
-> persists as `Enc<Mxe, Strategy>` across computations
-> ([`docs/persistent-strategy-state.md`](docs/persistent-strategy-state.md)).
-> Strategy evaluation runs against the live Pyth SOL/USD feed and returns
-> BUY/HOLD/SELL. The vault's own evaluation is not wired to it yet, so the app
-> still encrypts to a development key and says so. Trading is not built.
-> Nothing here is audited. Do not use with real funds.
+> **Status: working on devnet, not audited, not on mainnet.**
+>
+> The whole loop runs. A fresh wallet can create a vault, deposit, build a
+> strategy, have it encrypted in the browser and re-encrypted to the Arcium
+> cluster, have that cluster evaluate it against the live Pyth SOL/USD feed,
+> receive a BLS-attested authorization on chain, and withdraw everything
+> afterwards — verified end to end in `tests/e2e-devnet.ts` against the live
+> devnet cluster.
+>
+> The swap that spends an authorization is verified separately, on a surfpool
+> **mainnet fork** with a live Jupiter route, because devnet has no routable
+> liquidity. A permissionless executor (`apps/api`) drives the loop and has
+> been observed doing both halves.
+>
+> What that does **not** mean: no third party has audited any of this, the
+> program's upgrade authority is still a single hot key
+> ([`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) T-3), and nothing is deployed to
+> mainnet. Do not use with real funds.
+>
+> What is enforced, what is merely coded, and what is claimed and absent is
+> graded threat by threat in [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
 
 ---
 
