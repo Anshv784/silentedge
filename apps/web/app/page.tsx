@@ -16,7 +16,15 @@ import { StrategyBuilder } from "@/components/strategy-builder";
 import { describeRule, normalize, type Strategy } from "@silentedge/types";
 import { deriveEncryptionKeypair, encryptStrategy } from "@silentedge/sdk";
 import { fetchMxePublicKey, type MxeKey } from "@/lib/mxe";
-import { submitStrategy, readableError, useProgram } from "@/lib/vault-program";
+import {
+  submitStrategy,
+  convertStrategy,
+  readMxeVersion,
+  readPendingIntent,
+  selfExecute,
+  readableError,
+  useProgram,
+} from "@/lib/vault-program";
 import { VAULT_PROGRAM_ID } from "@silentedge/config";
 import { useConnection } from "@solana/wallet-adapter-react";
 
@@ -44,11 +52,84 @@ export default function Page() {
   const [encrypting, setEncrypting] = useState(false);
   const [encryptError, setEncryptError] = useState<string | null>(null);
   const [submittedVersion, setSubmittedVersion] = useState<number | null>(null);
+  const [converting, setConverting] = useState(false);
+  /** 0 until the cluster has re-encrypted the strategy to itself. */
+  const [mxeVersion, setMxeVersion] = useState<number>(0);
+  const [pending, setPending] = useState<{ side: number; amountIn: bigint } | null>(null);
+  const [executing, setExecuting] = useState(false);
 
   useEffect(() => {
     if (!connected) return;
     fetchMxePublicKey(connection, VAULT_PROGRAM_ID).then(setMxe);
   }, [connection, connected]);
+
+  useEffect(() => {
+    if (!program || !publicKey) return;
+    readMxeVersion(program, publicKey).then(setMxeVersion).catch(() => {});
+  }, [program, publicKey, submittedVersion]);
+
+  // An authorization is only spendable for ~72 seconds, so this polls rather
+  // than waiting for a user action that would usually arrive too late.
+  useEffect(() => {
+    if (!program || !publicKey) return;
+    let alive = true;
+    const read = () =>
+      readPendingIntent(program, publicKey)
+        .then((i) => alive && setPending(i))
+        .catch(() => {});
+    read();
+    const id = setInterval(read, 5_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [program, publicKey, receipts.length]);
+
+  /**
+   * Spend the pending authorization from this browser.
+   *
+   * Present so that nobody has to trust our executor to be running, honest, or
+   * fast. `execute_trade` is permissionless and every parameter was fixed by
+   * the verified callback, so this is the same transaction the executor would
+   * send — just paid for by you.
+   */
+  async function executeNow() {
+    if (!program || !publicKey || !pending) return;
+    setExecuting(true);
+    setEncryptError(null);
+    try {
+      const signature = await selfExecute(program, publicKey, pending);
+      recordAndRefresh({
+        signature,
+        action: `Execute authorized ${pending.side === 1 ? "buy" : "sell"}`,
+        at: Date.now(),
+      });
+      setPending(null);
+    } catch (e) {
+      setEncryptError(readableError(e));
+    } finally {
+      setExecuting(false);
+    }
+  }
+
+  /**
+   * Conversion finishes in a callback, not in the transaction that queues it,
+   * so the only honest signal is the on-chain version moving. Polling for it
+   * keeps the UI from claiming "armed" while the cluster is still working.
+   */
+  async function waitForConversion(p: NonNullable<typeof program>, owner: typeof publicKey) {
+    if (!owner) return;
+    const before = mxeVersion;
+    for (let i = 0; i < 40; i++) {
+      const now = await readMxeVersion(p, owner).catch(() => before);
+      if (now > before) {
+        setMxeVersion(now);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+    throw new Error("the cluster did not finish converting in time");
+  }
 
   /**
    * Encrypt in the browser, then submit only the ciphertext.
@@ -91,6 +172,32 @@ export default function Page() {
         action: `Encrypt strategy "${draft.name}"`,
         at: Date.now(),
       });
+
+      // Second signature, and the one that actually arms the bot.
+      //
+      // Submitting stores a strategy only you can read. Converting re-encrypts
+      // it to the cluster, which is what lets evaluations run with nobody
+      // online. Skipping it leaves a strategy that looks saved and can never
+      // fire — `evaluate_strategy` refuses with StrategyNotConverted while
+      // mxe_version is 0. Only the owner can do this, so it cannot be deferred
+      // to the executor.
+      setConverting(true);
+      try {
+        const convertSig = await convertStrategy(program, publicKey);
+        recordAndRefresh({
+          signature: convertSig,
+          action: "Hand strategy to the MPC cluster",
+          at: Date.now(),
+        });
+        await waitForConversion(program, publicKey);
+      } catch (e) {
+        setEncryptError(
+          `Strategy saved, but not yet armed: ${readableError(e)} ` +
+            "It cannot trade until conversion succeeds. Retry from Convert."
+        );
+      } finally {
+        setConverting(false);
+      }
     } catch (e) {
       setEncryptError(readableError(e));
     } finally {
@@ -299,14 +406,52 @@ export default function Page() {
                       {encryptError}
                     </p>
                   ) : null}
+                  {pending ? (
+                    <div className="mt-3 border border-[var(--color-signal)] px-3 py-2">
+                      <p className="text-[11px] leading-relaxed">
+                        <strong>
+                          {pending.side === 1 ? "Buy" : "Sell"}{" "}
+                          {pending.side === 1
+                            ? `${Number(pending.amountIn) / 1e6} ${QUOTE_SYMBOL}`
+                            : `${Number(pending.amountIn) / 1e9} ${BASE_SYMBOL}`}
+                        </strong>{" "}
+                        authorized by the computation and waiting to be spent.
+                        It expires in about a minute.
+                      </p>
+                      <button
+                        className="mt-2 border border-[var(--color-signal)] bg-[var(--color-signal)] px-3 py-1.5 text-[12px] text-white disabled:opacity-40"
+                        onClick={executeNow}
+                        disabled={executing}
+                      >
+                        {executing ? "Executing…" : "Execute it myself"}
+                      </button>
+                      <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                        Anyone can submit this, so you never have to wait for
+                        us. The side, size, price floor and expiry were fixed by
+                        the computation — executing only chooses the moment.
+                      </p>
+                    </div>
+                  ) : null}
+                  {submittedVersion && mxeVersion === 0 && !converting ? (
+                    <p className="mt-3 border border-[var(--color-exposed)] px-3 py-2 text-[11px] leading-relaxed text-[var(--color-exposed)]">
+                      Saved but not armed. The cluster has not re-encrypted this
+                      strategy to itself yet, so evaluations are refused and it
+                      cannot trade. Only you can complete this step — save again
+                      to retry.
+                    </p>
+                  ) : null}
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                     <span className="text-[12px] text-[var(--color-ink-soft)]">
                       {strategy.sizeBps / 100}% of the vault per trade
                       {encrypting
                         ? " · encrypting…"
-                        : submittedVersion
-                          ? ` · encrypted on chain (v${submittedVersion})`
-                          : ""}
+                        : converting
+                          ? " · handing to the cluster…"
+                          : mxeVersion > 0
+                            ? ` · armed (v${mxeVersion})`
+                            : submittedVersion
+                              ? " · saved, NOT armed"
+                              : ""}
                     </span>
                     <button
                       className="border border-[var(--color-rule)] px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-paper)]"

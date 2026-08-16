@@ -12,7 +12,17 @@ import {
 } from "@solana/spl-token";
 import { BASE_MINT, QUOTE_MINT, deriveVaultPda, VAULT_PROGRAM_ID } from "@silentedge/config";
 import type { EncryptedStrategy } from "@silentedge/sdk";
-import { nonceToU128 } from "@silentedge/sdk";
+import {
+  nonceToU128,
+  arciumAccounts,
+  CIRCUIT_STORE,
+  freshComputationOffset,
+} from "@silentedge/sdk";
+
+/** Must match the vault program's compiled-in EXPECTED_CLUSTER_OFFSET. */
+const CLUSTER_OFFSET = Number(
+  process.env.NEXT_PUBLIC_ARCIUM_CLUSTER_OFFSET ?? 456
+);
 
 // Build artifact. Run `anchor build` before building the web app.
 import idl from "../../../target/idl/vault.json";
@@ -20,11 +30,10 @@ import idl from "../../../target/idl/vault.json";
 /**
  * Risk limits applied to new vaults.
  *
- * KNOWN LIMITATION: the program has no instruction to change these after
- * creation, so a vault is stuck with whatever it was made with. That is fine
- * while nothing enforces them, but an `update_limits` instruction (owner-only)
- * has to land alongside the trading phases, or users will be permanently bound
- * to these defaults. Tracked for the risk-controls phase.
+ * Changeable after creation: `update_limits` is owner-only and bumps the vault
+ * nonce, which invalidates any authorization already in flight. `sizeBps` lives
+ * here rather than in the encrypted strategy because a single trade recovers it
+ * exactly from public data (THREAT_MODEL T-38).
  */
 export const DEFAULT_LIMITS = {
   maxTradeBps: 1_000, // 10% of the vault per trade
@@ -160,6 +169,126 @@ export async function submitStrategy(
       systemProgram: SystemProgram.programId,
     })
     .rpc();
+}
+
+/**
+ * Hand the submitted strategy to the MPC cluster.
+ *
+ * The step that makes an unattended bot possible, and the only one nobody else
+ * can do for you: `convert_strategy` derives `vault_config` from the *payer*,
+ * so it needs the owner's signature. It re-encrypts `Enc<Shared, Strategy>`
+ * (readable by you) into `Enc<Mxe, Strategy>` (readable only by the cluster
+ * acting together), after which evaluations need no one online.
+ *
+ * Until this runs, `strategy_state.mxe_version` is 0 and every evaluation is
+ * refused with `StrategyNotConverted` — a submitted strategy that was never
+ * converted is inert, not private-and-working.
+ */
+export async function convertStrategy(
+  program: Program,
+  owner: PublicKey
+): Promise<string> {
+  const vault = deriveVaultPda(owner);
+  const offset = freshComputationOffset();
+  return program.methods
+    .convertStrategy(new BN(offset.toString()))
+    .accountsPartial({
+      payer: owner,
+      vaultConfig: vault,
+      strategyState: deriveStrategyPda(vault),
+      ...arciumAccounts(VAULT_PROGRAM_ID, CLUSTER_OFFSET, offset, CIRCUIT_STORE),
+    })
+    .rpc({ skipPreflight: true });
+}
+
+/** `strategy_state.mxe_version`, or 0 if the strategy has never been stored. */
+export async function readMxeVersion(
+  program: Program,
+  owner: PublicKey
+): Promise<number> {
+  const vault = deriveVaultPda(owner);
+  const s: any = await (program.account as any).strategyState
+    .fetch(deriveStrategyPda(vault))
+    .catch(() => null);
+  return s ? Number(s.mxeVersion) : 0;
+}
+
+/**
+ * Spend a pending authorization yourself.
+ *
+ * The point of this button is independence: `execute_trade` is permissionless,
+ * so if our executor is down, slow, or hostile, the owner can close the loop
+ * from their own browser with their own fee payer. Nothing about the trade
+ * changes — the side, the size, the expiry and the oracle floor were all fixed
+ * by the verified callback, and the program re-checks every one of them.
+ */
+export async function selfExecute(
+  program: Program,
+  owner: PublicKey,
+  intent: { side: number; amountIn: bigint }
+): Promise<string> {
+  const vault = deriveVaultPda(owner);
+  const inputMint = intent.side === 1 ? QUOTE_MINT : BASE_MINT;
+  const outputMint = intent.side === 1 ? BASE_MINT : QUOTE_MINT;
+
+  const url =
+    `https://api.jup.ag/swap/v2/build?inputMint=${inputMint.toBase58()}` +
+    `&outputMint=${outputMint.toBase58()}&amount=${intent.amountIn}` +
+    `&taker=${vault.toBase58()}&maxAccounts=24&onlyDirectRoutes=true` +
+    `&wrapAndUnwrapSol=false&slippageBps=100`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Could not get a route (${res.status}).`);
+  const j = await res.json();
+  if (!j.swapInstruction) throw new Error("No route is available right now.");
+  const si = j.swapInstruction;
+
+  return program.methods
+    .executeTrade(Buffer.from(si.data, "base64"))
+    .accountsPartial({
+      executor: owner,
+      vaultConfig: vault,
+      tradeIntent: deriveIntentPda(vault),
+      strategyState: deriveStrategyPda(vault),
+      vaultQuoteAta: getAssociatedTokenAddressSync(QUOTE_MINT, vault, true),
+      vaultBaseAta: getAssociatedTokenAddressSync(BASE_MINT, vault, true),
+      priceUpdate: new PublicKey(
+        process.env.NEXT_PUBLIC_PYTH_SOL_USD ??
+          "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"
+      ),
+      jupiterProgram: new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
+    })
+    .remainingAccounts(
+      si.accounts.map((a: any) => ({
+        pubkey: new PublicKey(a.pubkey),
+        isSigner: false, // the vault PDA signs via invoke_signed, not here
+        isWritable: a.isWritable,
+      }))
+    )
+    .rpc({ skipPreflight: true });
+}
+
+export function deriveIntentPda(vault: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("intent"), vault.toBuffer()],
+    VAULT_PROGRAM_ID
+  )[0];
+}
+
+/** The pending authorization, if there is a spendable one. */
+export async function readPendingIntent(
+  program: Program,
+  owner: PublicKey
+): Promise<{ side: number; amountIn: bigint; expiresAtSlot: bigint } | null> {
+  const vault = deriveVaultPda(owner);
+  const i: any = await (program.account as any).tradeIntent
+    .fetch(deriveIntentPda(vault))
+    .catch(() => null);
+  if (!i || i.consumed || BigInt(i.amountIn.toString()) === 0n) return null;
+  return {
+    side: Number(i.side),
+    amountIn: BigInt(i.amountIn.toString()),
+    expiresAtSlot: BigInt(i.expiresAtSlot.toString()),
+  };
 }
 
 /** Turn an Anchor/RPC error into something a person can act on. */
