@@ -30,8 +30,8 @@ const draft = (over: Partial<Strategy> = {}): Strategy => ({
   ...over,
 });
 
-const fieldsWithErrors = (s: Strategy) =>
-  validateStrategy(s, MAX_SIZE_BPS).map((e) => e.field);
+const fieldsWithErrors = (s: Strategy, cap: number = MAX_SIZE_BPS) =>
+  validateStrategy(s, cap).map((e) => e.field);
 
 describe("toPriceUnits", () => {
   it("scales prices exactly", () => {
@@ -129,7 +129,7 @@ describe("validateStrategy", () => {
 });
 
 describe("normalize", () => {
-  it("collapses rules into the four circuit fields", () => {
+  it("collapses rules into the circuit fields, in field order", () => {
     const s = draft({
       rules: [
         { kind: "entry", value: "150" },
@@ -164,6 +164,50 @@ describe("normalize", () => {
       MAX_SIZE_BPS
     );
     expect(sellOnly.entryBelow).to.equal(NEVER_BUY);
+  });
+
+  /**
+   * Boundaries, each checked on both sides. These are the values a user is most
+   * likely to enter by accident and the ones a validator is most likely to get
+   * wrong by one.
+   */
+  it("accepts and rejects exactly at each boundary", () => {
+    // Price precision: PRICE_DECIMALS is the limit, not a suggestion.
+    expect(fieldsWithErrors(draft({ rules: [{ kind: "entry", value: "150.123456" }] })))
+      .to.deep.equal([]);
+    expect(fieldsWithErrors(draft({ rules: [{ kind: "entry", value: "150.1234567" }] })))
+      .to.include("entry");
+
+    // Ordering is strict: equal is not ordered.
+    const at = (exit: string) =>
+      fieldsWithErrors(draft({
+        rules: [{ kind: "entry", value: "150" }, { kind: "exit", value: exit }],
+      }));
+    expect(at("150"), "exit equal to entry").to.include("exit");
+    expect(at("150.000001"), "exit one unit above entry").to.deep.equal([]);
+
+    const stopAt = (stop: string) =>
+      fieldsWithErrors(draft({
+        rules: [{ kind: "entry", value: "150" }, { kind: "stop", value: stop }],
+      }));
+    expect(stopAt("150"), "stop equal to entry").to.include("stop");
+    expect(stopAt("149.999999"), "stop one unit below entry").to.deep.equal([]);
+
+    // Name length.
+    expect(fieldsWithErrors(draft({ name: "x".repeat(40) }))).to.deep.equal([]);
+    expect(fieldsWithErrors(draft({ name: "x".repeat(41) }))).to.include("name");
+  });
+
+  /**
+   * The builder's cap is the vault's own `max_trade_bps`, which varies per
+   * vault. A validator that assumed a constant would either refuse a size the
+   * program accepts or accept one it rejects — the second only discovered after
+   * an MPC evaluation had been paid for.
+   */
+  it("takes the size cap from the vault rather than a constant", () => {
+    expect(fieldsWithErrors(draft({ sizeBps: 2_000 }), 2_000)).to.deep.equal([]);
+    expect(fieldsWithErrors(draft({ sizeBps: 2_001 }), 2_000)).to.include("sizeBps");
+    expect(fieldsWithErrors(draft({ sizeBps: 2_000 }), 1_000)).to.include("sizeBps");
   });
 
   it("keeps sentinels inside u64", () => {

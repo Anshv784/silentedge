@@ -35,7 +35,7 @@ import {
   vaultValueInQuote,
   type Activity,
 } from "@/lib/activity";
-import { readLimits } from "@/lib/vault-program";
+import { readLimits, updateLimits } from "@/lib/vault-program";
 
 const PYTH_SOL_USD = new PublicKey(
   process.env.NEXT_PUBLIC_PYTH_SOL_USD ??
@@ -75,6 +75,38 @@ export default function Page() {
   const [activity, setActivity] = useState<Activity[] | null>(null);
   const [oracle, setOracle] = useState<{ price: number; publishedAt: number } | null>(null);
   const [limits, setLimits] = useState<Awaited<ReturnType<typeof readLimits>>>(null);
+  /**
+   * The builder's size ceiling is the vault's own `max_trade_bps`, not a
+   * constant. It was hardcoded to 1000, so a vault configured with a different
+   * cap would have had the builder disagree with the program — either refusing
+   * a size the chain would accept, or accepting one it would reject at
+   * execution, after an MPC evaluation had already been paid for.
+   */
+  const sizeCap = limits?.maxTradeBps ?? 1_000;
+  const [editingLimits, setEditingLimits] = useState(false);
+  const [limitsBusy, setLimitsBusy] = useState(false);
+
+  /**
+   * Limits are enforced now, and the vault has no close instruction, so a bad
+   * value chosen at creation would otherwise bind that vault forever. Saving
+   * bumps the vault nonce, which invalidates any authorization already in
+   * flight — an intent carries no copy of the envelope it was issued under.
+   */
+  async function saveLimits(next: NonNullable<typeof limits>) {
+    if (!program || !publicKey) return;
+    setLimitsBusy(true);
+    setEncryptError(null);
+    try {
+      const signature = await updateLimits(program, publicKey, next);
+      setLimits(next);
+      setEditingLimits(false);
+      recordAndRefresh({ signature, action: "Update risk limits", at: Date.now() });
+    } catch (e) {
+      setEncryptError(readableError(e));
+    } finally {
+      setLimitsBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!connected) return;
@@ -227,7 +259,7 @@ export default function Page() {
     try {
       const keypair = await deriveEncryptionKeypair(signMessage);
       const encrypted = encryptStrategy(
-        normalize(draft, 1000),
+        normalize(draft, sizeCap),
         mxe.key,
         keypair.privateKey
       );
@@ -515,6 +547,72 @@ export default function Page() {
                     Reading limits…
                   </p>
                 )}
+                {limits ? (
+                  editingLimits ? (
+                    <form
+                      className="mt-4 grid grid-cols-2 gap-3"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const f = new FormData(e.currentTarget as HTMLFormElement);
+                        saveLimits({
+                          ...limits,
+                          sizeBps: Math.round(Number(f.get("size")) * 100),
+                          maxTradeBps: Math.round(Number(f.get("cap")) * 100),
+                          maxSlippageBps: Math.round(Number(f.get("slip")) * 100),
+                          cooldownSeconds: Math.round(Number(f.get("cool"))),
+                        });
+                      }}
+                    >
+                      {[
+                        ["size", "Trade size %", limits.sizeBps / 100, 0.01, 100],
+                        ["cap", "Max per trade %", limits.maxTradeBps / 100, 0.01, 50],
+                        ["slip", "Max slippage %", limits.maxSlippageBps / 100, 0.01, 5],
+                        ["cool", "Cooldown (s)", limits.cooldownSeconds, 0, 3600],
+                      ].map(([name, label, val, min, max]) => (
+                        <label key={String(name)} className="text-[11px]">
+                          <span className="text-[var(--color-ink-soft)]">{label}</span>
+                          <input
+                            name={String(name)}
+                            type="number"
+                            step="any"
+                            min={Number(min)}
+                            max={Number(max)}
+                            defaultValue={Number(val)}
+                            className="tabular mt-1 w-full border border-[var(--color-rule)] bg-[var(--color-paper)] px-2 py-1.5 text-[12px]"
+                          />
+                        </label>
+                      ))}
+                      <div className="col-span-2 flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={limitsBusy}
+                          className="border border-[var(--color-signal)] bg-[var(--color-signal)] px-3 py-1.5 text-[12px] text-white disabled:opacity-40"
+                        >
+                          {limitsBusy ? "Saving…" : "Save limits"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingLimits(false)}
+                          className="border border-[var(--color-rule)] px-3 py-1.5 text-[12px]"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      <p className="col-span-2 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+                        Saving cancels any authorization currently in flight, so
+                        a decision made under the old limits cannot execute under
+                        the new ones.
+                      </p>
+                    </form>
+                  ) : (
+                    <button
+                      className="mt-3 border border-[var(--color-rule)] px-3 py-1.5 text-[12px] transition-colors hover:bg-[var(--color-paper)]"
+                      onClick={() => setEditingLimits(true)}
+                    >
+                      Edit limits
+                    </button>
+                  )
+                ) : null}
                 <p className="mt-3 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
                   Exits are exempt from the size cap and the cooldown on purpose:
                   a stop-loss sells the whole position, and a cap can never
@@ -575,7 +673,7 @@ export default function Page() {
 
               {editing ? (
                 <StrategyBuilder
-                  maxSizeBps={1000}
+                  maxSizeBps={sizeCap}
                   onCancel={() => setEditing(false)}
                   onSave={(s) => {
                     setStrategy(s);
