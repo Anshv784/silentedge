@@ -580,6 +580,69 @@ describe("vault — swap execution against forked mainnet", function () {
     }
   });
 
+  const setExposure = (maxBaseExposureBps: number, minTradeBps: number) =>
+    (program.methods as any)
+      .setExposureLimits(maxBaseExposureBps, minTradeBps)
+      .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
+      .signers([owner])
+      .rpc();
+
+  /**
+   * The ceiling `max_trade_bps` cannot express.
+   *
+   * A per-trade cap bounds one trade; it says nothing about the sum. "Buy below
+   * $150" keeps firing all the way down, so a falling market converts the whole
+   * vault into the falling asset, every individual trade inside its cap. This
+   * bounds the position rather than the trade.
+   */
+  it("refuses an entry that would breach the concentration ceiling", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await setToken(vault, WSOL, 3_000_000_000n); // already heavily in base
+    await refreshOracle();
+    await setExposure(1_000, 0); // no more than 10% of value in base
+    await seedIntent();
+    try {
+      await execute(await route(TRADE_IN));
+      expect.fail("bought past the exposure ceiling");
+    } catch (e) {
+      expect(String(e)).to.match(/ExposureLimitReached/);
+    } finally {
+      await setExposure(0, 0);
+      await setToken(vault, WSOL, 0n);
+    }
+  });
+
+  it("allows the same entry once the ceiling is wide enough", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await setToken(vault, WSOL, 0n);
+    await refreshOracle();
+    await setExposure(9_000, 0);
+    await seedIntent();
+    const before = await bal(vaultBase);
+    await execute(await route(TRADE_IN));
+    expect(Number(await bal(vaultBase))).to.be.greaterThan(Number(before));
+    await setExposure(0, 0);
+  });
+
+  /**
+   * A dust trade costs a full transaction and a full spread and moves nothing.
+   * Refusing it is cheaper than executing it.
+   */
+  it("refuses a trade too small to be worth its costs", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    await setExposure(0, 1_000); // at least 10% of the balance
+    await seedIntent({ amountIn: 1_000_000n }); // 1 USDC of 5,000
+    try {
+      await execute(await route(1_000_000n));
+      expect.fail("executed a dust trade");
+    } catch (e) {
+      expect(String(e)).to.match(/TradeTooSmall/);
+    } finally {
+      await setExposure(0, 0);
+    }
+  });
+
   it("refuses to swap through anything but the pinned aggregator", async () => {
     await seedIntent();
     const si = await route(TRADE_IN);

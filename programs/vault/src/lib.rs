@@ -65,9 +65,11 @@ pub mod vault {
         vault_config.bump = ctx.bumps.vault_config;
         vault_config.nonce = 0;
         vault_config.last_trade_ts = 0;
+        vault_config.max_base_exposure_bps = 0;
+        vault_config.min_trade_bps = 0;
         vault_config.listed = false;
         vault_config.name = [0u8; 32];
-        vault_config.reserved = [0u8; 29];
+        vault_config.reserved = [0u8; 25];
 
         emit!(VaultInitialized {
             vault: vault_config.key(),
@@ -129,6 +131,45 @@ pub mod vault {
         emit!(ListingChanged {
             vault: vault.key(),
             listed,
+        });
+        Ok(())
+    }
+
+    /// Set the concentration ceiling and the minimum trade size. Owner only.
+    ///
+    /// A separate instruction rather than two more fields on `RiskLimits`,
+    /// because `RiskLimits` sits in the middle of `VaultConfig` — adding to it
+    /// shifts the offset of every field after it and strands every existing
+    /// vault, which is exactly the mistake this codebase already made once and
+    /// documented at `VaultConfig::reserved`.
+    ///
+    /// Both default to 0, meaning disabled, which is what a vault created
+    /// before these existed reads out of zeroed reserve bytes.
+    pub fn set_exposure_limits(
+        ctx: Context<UpdateLimits>,
+        max_base_exposure_bps: u16,
+        min_trade_bps: u16,
+    ) -> Result<()> {
+        require!(
+            max_base_exposure_bps <= BPS_DENOMINATOR,
+            VaultError::InvalidRiskLimit
+        );
+        // A minimum above the per-trade cap would refuse every trade the
+        // strategy could ever size, which is a bricked vault rather than a
+        // conservative one.
+        require!(
+            min_trade_bps <= ctx.accounts.vault_config.limits.max_trade_bps,
+            VaultError::InvalidRiskLimit
+        );
+
+        let vault = &mut ctx.accounts.vault_config;
+        vault.max_base_exposure_bps = max_base_exposure_bps;
+        vault.min_trade_bps = min_trade_bps;
+        vault.nonce = vault.nonce.checked_add(1).ok_or(VaultError::Overflow)?;
+
+        emit!(LimitsUpdated {
+            vault: vault.key(),
+            nonce: vault.nonce,
         });
         Ok(())
     }
@@ -381,6 +422,17 @@ pub mod vault {
             VaultError::InsufficientSourceBalance
         );
 
+        // A trade too small to matter still costs a transaction and a spread.
+        // Applied to both sides: a dust exit is as wasteful as a dust entry.
+        let min_trade_bps = vault.min_trade_bps;
+        if min_trade_bps > 0 {
+            let floor = (src_before as u128)
+                .checked_mul(min_trade_bps as u128)
+                .ok_or(VaultError::Overflow)?
+                / BPS_DENOMINATOR as u128;
+            require!(amount_in as u128 >= floor, VaultError::TradeTooSmall);
+        }
+
         // The vault's own cap, applied to the balance actually being spent — on
         // entries only.
         //
@@ -416,6 +468,37 @@ pub mod vault {
         // and the floor the swap must clear.
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
         let min_out = oracle_min_out(side, amount_in, &price, max_slippage_bps)?;
+
+        // Concentration ceiling, on entries only. Priced with the same oracle
+        // read the floor uses, so a manipulated price cannot slip past it.
+        //
+        // `max_trade_bps` bounds one trade; this bounds the sum of them. A rule
+        // like "buy below $150" keeps firing all the way down, so without a
+        // ceiling a falling market converts the whole vault into the falling
+        // asset, each trade individually within its cap.
+        if side == SIDE_BUY && ctx.accounts.vault_config.max_base_exposure_bps > 0 {
+            let base_after = ctx
+                .accounts
+                .vault_base_ata
+                .amount
+                .checked_add(min_out)
+                .ok_or(VaultError::Overflow)?;
+            let base_value = oracle_min_out(SIDE_SELL, base_after, &price, 0)?;
+            let quote_after = src_before
+                .checked_sub(amount_in)
+                .ok_or(VaultError::Overflow)?;
+            let total = (base_value as u128)
+                .checked_add(quote_after as u128)
+                .ok_or(VaultError::Overflow)?;
+            let ceiling = total
+                .checked_mul(ctx.accounts.vault_config.max_base_exposure_bps as u128)
+                .ok_or(VaultError::Overflow)?
+                / BPS_DENOMINATOR as u128;
+            require!(
+                (base_value as u128) <= ceiling,
+                VaultError::ExposureLimitReached
+            );
+        }
 
         let vault_key = ctx.accounts.vault_config.key();
         let lamports_before = ctx.accounts.vault_config.to_account_info().lamports();

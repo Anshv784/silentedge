@@ -125,6 +125,28 @@ pub struct VaultConfig {
     /// without a special case.
     pub last_trade_ts: i64,
 
+    /// Ceiling on how much of the vault may sit in the base asset, in basis
+    /// points of total value, enforced on entries only.
+    ///
+    /// The strategy decides *when* to buy; this decides how concentrated the
+    /// vault is allowed to become. A rule like "buy below $150" keeps firing
+    /// all the way down, so without a ceiling a falling market converts the
+    /// whole vault into the falling asset — each individual trade inside its
+    /// per-trade cap, and the position unbounded in aggregate. `max_trade_bps`
+    /// cannot express this: it bounds one trade, not the sum of them.
+    ///
+    /// 0 means no ceiling, which is the value existing vaults read out of
+    /// zeroed reserve bytes — preserving today's behaviour exactly.
+    pub max_base_exposure_bps: u16,
+
+    /// Refuse trades below this share of the spendable balance.
+    ///
+    /// A dust trade costs the same transaction and swap spread as a real one
+    /// and moves nothing. With a small `size_bps` on a small vault, a strategy
+    /// can otherwise grind the balance away in fees while appearing to work.
+    /// 0 disables it, which is what existing vaults read.
+    pub min_trade_bps: u16,
+
     /// Whether this vault appears in public discovery.
     ///
     /// Carved from the reserve rather than appended, so every existing vault
@@ -169,7 +191,7 @@ pub struct VaultConfig {
     ///
     /// Borsh is positional. Preserving the byte count preserves nothing on its
     /// own; preserving the *offset of every existing field* is the requirement.
-    pub reserved: [u8; 29],
+    pub reserved: [u8; 25],
 }
 
 impl VaultConfig {

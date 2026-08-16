@@ -237,6 +237,21 @@ export async function setListing(
     .rpc();
 }
 
+/** The two VaultConfig-level controls, which are not part of RiskLimits. */
+export async function readExposureLimits(
+  program: Program,
+  owner: PublicKey
+): Promise<{ maxBaseExposureBps: number; minTradeBps: number } | null> {
+  const v: any = await (program.account as any).vaultConfig
+    .fetch(deriveVaultPda(owner))
+    .catch(() => null);
+  if (!v) return null;
+  return {
+    maxBaseExposureBps: Number(v.maxBaseExposureBps ?? 0),
+    minTradeBps: Number(v.minTradeBps ?? 0),
+  };
+}
+
 /** Whether this vault is currently discoverable, and under what name. */
 export async function readListing(
   program: Program,
@@ -281,6 +296,25 @@ export async function followVault(
       )[0],
       systemProgram: SystemProgram.programId,
     })
+    .rpc();
+}
+
+/**
+ * Concentration ceiling and minimum trade size. Owner only.
+ *
+ * Separate from `updateLimits` because these live on VaultConfig rather than
+ * inside RiskLimits — putting them in RiskLimits would shift every field after
+ * it and strand existing vaults. Both 0 means disabled.
+ */
+export async function setExposureLimits(
+  program: Program,
+  owner: PublicKey,
+  maxBaseExposureBps: number,
+  minTradeBps: number
+): Promise<string> {
+  return (program.methods as any)
+    .setExposureLimits(maxBaseExposureBps, minTradeBps)
+    .accountsPartial({ owner, vaultConfig: deriveVaultPda(owner) })
     .rpc();
 }
 

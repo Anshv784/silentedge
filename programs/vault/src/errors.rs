@@ -106,4 +106,11 @@ pub enum VaultError {
 
     #[msg("A vault cannot follow itself")]
     CannotFollowSelf,
+
+    // --- exposure and sizing ---
+    #[msg("Trade would push base exposure past the vault's ceiling")]
+    ExposureLimitReached,
+
+    #[msg("Trade is too small to be worth its costs")]
+    TradeTooSmall,
 }
