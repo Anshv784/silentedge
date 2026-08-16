@@ -360,6 +360,9 @@ export default function Page() {
             <a href="/app/discover" className="text-[13px] underline-offset-4 hover:underline">
               Discover
             </a>
+            <a href="/app/portfolio" className="text-[13px] underline-offset-4 hover:underline">
+              Portfolio
+            </a>
             <WalletButton />
           </div>
         </header>
