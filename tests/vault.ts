@@ -146,6 +146,39 @@ describe("vault — custody", () => {
     }
   });
 
+  /**
+   * THREAT_MODEL §9 listed "non-allowlisted mint -> rejected" as a met
+   * obligation while `MintNotAllowed` appeared nowhere in tests/. The allowlist
+   * is what keeps a vault's two sides to assets the oracle and the swap path
+   * actually understand, so it is worth a detector rather than a claim.
+   */
+  it("refuses a vault built on a mint outside the allowlist", async () => {
+    const owner = await newFundedKeypair();
+    const vault = vaultPda(owner.publicKey);
+    // A real mint, just not one this program will trade.
+    const foreign = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+    try {
+      await program.methods
+        .initializeVault(validLimits())
+        .accountsPartial({
+          owner: owner.publicKey,
+          vaultConfig: vault,
+          baseMint: BASE_MINT,
+          quoteMint: foreign,
+          vaultBaseAta: ata(vault, BASE_MINT, true),
+          vaultQuoteAta: ata(vault, foreign, true),
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+      assert.fail("accepted a mint outside the allowlist");
+    } catch (e) {
+      expect(e.toString()).to.match(/MintNotAllowed|ConstraintRaw/);
+    }
+  });
+
   it("cannot initialize the same vault twice", async () => {
     const owner = await newFundedKeypair();
     await initVault(owner);

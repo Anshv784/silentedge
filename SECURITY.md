@@ -2,10 +2,16 @@
 
 Security assumptions, honest claims, and disclosure policy.
 
-> **Status: pre-implementation.** Nothing here is audited. No code has been written. Every
-> "enforced" statement below describes an intended, specified control — not a verified one.
-> Controls become verified only when the corresponding test in
-> [`THREAT_MODEL.md`](THREAT_MODEL.md) §9 passes.
+> **Status: implemented, self-audited, not externally audited.** "No code has
+> been written" was true when this line was added and false for a long time
+> after; it is corrected here because a stale disclaimer is its own hazard —
+> it invites discounting the controls that do hold.
+>
+> The program is deployed on devnet and exercised by 92 tests. What each
+> control is actually worth — enforced, coded-but-untested, or claimed and
+> absent — is graded threat by threat in
+> [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md). No third party has reviewed any of
+> it, and the upgrade authority is still a single hot key (T-3).
 
 ---
 

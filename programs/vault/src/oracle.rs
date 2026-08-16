@@ -287,11 +287,36 @@ mod tests {
         assert!(buy_wide < buy_point * 101 / 100, "conf must not dominate");
     }
 
+    /// Absurd inputs must error, not wrap into a tiny floor.
+    ///
+    /// The earlier version of this test claimed to prove the `checked_mul` in
+    /// `oracle_min_out` was load-bearing. It did not: `u64::MAX * 1e9` is
+    /// ~1.8e28, comfortably inside `u128::MAX` (~3.4e38), so that multiply
+    /// cannot overflow and the test was passing on the `u64::try_from` at the
+    /// end — which fires with or without checked arithmetic. A test whose
+    /// stated reason is wrong is worse than no test, because it stops anyone
+    /// looking again.
+    ///
+    /// What is actually checked: the result does not fit u64 and is rejected
+    /// rather than truncated, on both sides.
     #[test]
-    fn does_not_overflow_on_absurd_amounts() {
-        // u64::MAX * 1e9 overflows u128 only above ~3.4e29; check it is handled
-        // rather than wrapping into a tiny, trivially-satisfied floor.
-        let r = oracle_min_out(SIDE_BUY, u64::MAX, &at(1), 0);
-        assert!(r.is_err(), "expected overflow, got {r:?}");
+    fn absurd_amounts_are_rejected_not_truncated() {
+        let buy = oracle_min_out(SIDE_BUY, u64::MAX, &at(1), 0);
+        assert!(buy.is_err(), "buy floor must not truncate: {buy:?}");
+
+        // SELL multiplies by the price, so a large price is the overflow lever
+        // here rather than a large amount.
+        let sell = oracle_min_out(SIDE_SELL, u64::MAX, &at(u64::MAX), 0);
+        assert!(sell.is_err(), "sell floor must not truncate: {sell:?}");
+    }
+
+    /// The multiply that *can* overflow u128, proving `checked_mul` is needed.
+    #[test]
+    fn checked_multiply_is_load_bearing() {
+        // conf saturates rather than wrapping when it exceeds the price.
+        let inverted = OraclePrice { price: 1, conf: u64::MAX };
+        let r = oracle_min_out(SIDE_BUY, USDC_500, &inverted, 0);
+        // price - conf saturates to 0, which must be refused, not divided by.
+        assert!(r.is_err(), "zero effective price must be refused: {r:?}");
     }
 }

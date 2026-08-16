@@ -59,6 +59,22 @@ export default function Page() {
    */
   async function encryptAndSubmit(draft: Strategy) {
     if (!program || !publicKey || !signMessage || !mxe) return;
+
+    // Refuse rather than encrypt to the development stand-in.
+    //
+    // `fetchMxePublicKey` falls back to a fixed, public, in-repo constant on
+    // any error, and this guard used to check only `!mxe`. With a real MXE
+    // deployed, that fallback is no longer a visible dev state — it is what a
+    // transient RPC failure looks like, and it would have silently published a
+    // strategy anyone can decrypt while the UI said "encrypted on chain".
+    if (!mxe.live) {
+      setEncryptError(
+        "Not submitting: the MXE encryption key could not be read, so the " +
+          "strategy would be encrypted to a public development key. Retry."
+      );
+      return;
+    }
+
     setEncrypting(true);
     setEncryptError(null);
     try {

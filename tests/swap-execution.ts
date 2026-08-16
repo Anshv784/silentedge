@@ -203,6 +203,7 @@ describe("vault — swap execution against forked mainnet", function () {
    */
   async function seedIntent(fields: {
     side?: number; amountIn?: bigint; consumed?: boolean; expiresIn?: number;
+    nonceDelta?: bigint;
   } = {}) {
     const existing = (await connection.getAccountInfo(intentPda))!;
     const d = Buffer.from(existing.data);
@@ -216,7 +217,7 @@ describe("vault — swap execution against forked mainnet", function () {
     d.writeBigUInt64LE(fields.amountIn ?? TRADE_IN, o); o += 8;
     d.writeBigUInt64LE(0n, o); o += 8; // min_amount_out: derived on chain
     d.writeBigUInt64LE(BigInt(slot + (fields.expiresIn ?? 150)), o); o += 8;
-    d.writeBigUInt64LE(BigInt(vc.nonce.toString()), o); o += 8;
+    d.writeBigUInt64LE(BigInt(vc.nonce.toString()) + (fields.nonceDelta ?? 0n), o); o += 8;
     d.writeUInt32LE(ss.mxeVersion, o); o += 4;
     d.writeBigUInt64LE(0n, o); o += 8; // oracle_price: set at execution
     d.writeUInt8(fields.consumed ? 1 : 0, o);
@@ -310,16 +311,18 @@ describe("vault — swap execution against forked mainnet", function () {
   const bal = async (a: PublicKey) =>
     BigInt((await connection.getTokenAccountBalance(a)).value.amount);
 
-  const setCooldown = (cooldownSeconds: number) =>
+  const setLimits = (over: { cooldownSeconds?: number; maxSlippageBps?: number } = {}) =>
     program.methods
       .updateLimits({
         maxTradeBps: 1_000, maxSlippageBps: 100, dailyLossLimitBps: 500,
-        cooldownSeconds, maxOracleStalenessSec: 30, maxConfBps: 100,
-        maxOracleDeviationBps: 200, sizeBps: 1_000,
+        cooldownSeconds: 0, maxOracleStalenessSec: 30, maxConfBps: 100,
+        maxOracleDeviationBps: 200, sizeBps: 1_000, ...over,
       })
       .accountsPartial({ owner: owner.publicKey, vaultConfig: vault })
       .signers([owner])
       .rpc();
+
+  const setCooldown = (cooldownSeconds: number) => setLimits({ cooldownSeconds });
 
   it("swaps the authorized amount and keeps the proceeds in the vault", async () => {
     await seedIntent();
@@ -424,6 +427,69 @@ describe("vault — swap execution against forked mainnet", function () {
     // Leave the vault as we found it — a 3600s cooldown would otherwise make
     // every later test fail with CooldownActive instead of its own assertion.
     await setCooldown(0);
+  });
+
+  /**
+   * The assertion that actually keeps the proceeds.
+   *
+   * Of the three post-CPI checks, this is the only one requiring that the swap
+   * delivered anything *to this vault*. The source-delta check merely confirms
+   * `amount_in` left; the lamports check covers rent. A route that spends the
+   * authorized amount and sends the output somewhere else satisfies both — and
+   * since exits are uncapped by design, that is the whole base balance.
+   *
+   * Nothing detected its removal until this test: `SlippageExceeded` appeared
+   * zero times across tests/, and the happy-path test asserts `received >=
+   * floor` on the *observed* result, which holds whether or not the program
+   * checks it. Setting slippage to 1 bp makes the oracle floor unreachable for
+   * any real fill, so the program must refuse.
+   */
+  it("rejects a fill below the oracle-derived floor", async () => {
+    // Top up first: earlier tests drain the quote balance, and TRADE_IN is
+    // exactly max_trade_bps of DEPOSIT, so a short balance trips the size cap
+    // before the floor check is ever reached.
+    await setToken(vault, USDC, DEPOSIT);
+    await setLimits({ maxSlippageBps: 1 });
+    await refreshOracle();
+    await seedIntent();
+    try {
+      await execute(await route(TRADE_IN));
+      expect.fail("accepted a fill below the floor");
+    } catch (e) {
+      expect(String(e)).to.match(/SlippageExceeded/);
+    } finally {
+      await setLimits();
+    }
+  });
+
+  /**
+   * THREAT_MODEL §9 listed "expired intent -> rejected" and "replayed intent ->
+   * rejected" as met obligations. Only the replay half existed; `IntentExpired`
+   * and `IntentStale` appeared nowhere in tests/. An authorization whose whole
+   * safety story is "it goes stale quickly" needs the staleness checked.
+   */
+  it("refuses an authorization past its expiry slot", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    await seedIntent({ expiresIn: -10 }); // already in the past
+    try {
+      await execute(await route(TRADE_IN));
+      expect.fail("executed an expired authorization");
+    } catch (e) {
+      expect(String(e)).to.match(/IntentExpired/);
+    }
+  });
+
+  it("refuses an authorization bound to a superseded vault nonce", async () => {
+    await setToken(vault, USDC, DEPOSIT);
+    await refreshOracle();
+    await seedIntent({ nonceDelta: -1n }); // the nonce before the current one
+    try {
+      await execute(await route(TRADE_IN));
+      expect.fail("executed against a superseded nonce");
+    } catch (e) {
+      expect(String(e)).to.match(/IntentStale/);
+    }
   });
 
   it("refuses to swap through anything but the pinned aggregator", async () => {

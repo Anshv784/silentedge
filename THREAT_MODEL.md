@@ -3,9 +3,16 @@
 Companion to ARCHITECTURE.md. Assumes the design in that document, not the design in the
 original brief.
 
-**Status: PROPOSED, pre-implementation.** Every "Mitigated" below means *designed to be
-mitigated*. Nothing is verified until the corresponding test exists and passes. Phase 18
-converts this document into SECURITY_AUDIT.md with evidence.
+**Status: IMPLEMENTED AND PARTLY VERIFIED.** This header used to read
+"PROPOSED, pre-implementation", which stopped being true several phases ago and
+made every row read as aspiration — including the rows that are now the
+best-tested properties in the repo.
+
+Per-threat evidence, with each claim graded by whether a test would actually
+fail if the mitigation were deleted, is in
+[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md). Read that before trusting a
+"Mitigated" here: 15 of 39 threats have code with no removal-detector behind
+it, and the audit says so.
 
 ---
 
