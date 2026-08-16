@@ -68,12 +68,22 @@ mod circuits {
     /// The whole product in one function: secret thresholds meet a public
     /// market price inside MPC, and only the resulting action escapes.
     ///
+    /// # Why `_v2`
+    ///
+    /// A computation definition is keyed by circuit *name* and pins the
+    /// circuit's interface at registration. Adding `base_value` changed that
+    /// interface, and a registered definition cannot be re-pointed at a new one
+    /// — closing it needs a deactivation plus a TTL. Renaming allocates a fresh
+    /// offset, which is the supported way to ship a signature change. The v1
+    /// definition is deactivated so nothing can queue against the old sizing.
+    ///
     /// # What is deliberately not hidden
     ///
-    /// `price` and `vault_value` are plaintext parameters. Every Arx node sees
-    /// them, and they are visible on chain in the queueing transaction. That is
-    /// correct — the price is public information and the vault's balance is a
-    /// public token account. Encrypting them would cost gates and hide nothing.
+    /// `price`, `quote_value` and `base_value` are plaintext parameters. Every
+    /// Arx node sees them, and they are visible on chain in the queueing
+    /// transaction. That is correct — the price is public information and both
+    /// vault balances are public token accounts. Encrypting them would cost
+    /// gates and hide nothing.
     ///
     /// The return value is `.reveal()`ed because a trade cannot be executed
     /// without it. This is the minimum: a side and a size. Nothing about *why*
@@ -91,7 +101,7 @@ mod circuits {
     /// Arcis rejects revealing inside a non-constant branch, and that rule
     /// exists precisely to stop the control flow leaking.
     #[instruction]
-    pub fn evaluate_strategy(
+    pub fn evaluate_strategy_v2(
         strategy_ctxt: Enc<Mxe, Strategy>,
         price: u64,
         quote_value: u64,

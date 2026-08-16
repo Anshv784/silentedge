@@ -201,7 +201,7 @@ describe("vault — authorization on devnet", function () {
       const tx = await provider.connection.getTransaction(s.signature, {
         commitment: "confirmed", maxSupportedTransactionVersion: 0,
       });
-      if (tx?.meta?.logMessages?.some((l) => l.includes("EvaluateStrategyCallback")))
+      if (tx?.meta?.logMessages?.some((l) => l.includes("EvaluateStrategyV2Callback")))
         return true;
     }
     return false;
@@ -220,7 +220,7 @@ describe("vault — authorization on devnet", function () {
       mempoolAccount: getMempoolAccAddress(env.arciumClusterOffset),
       executingPool: getExecutingPoolAccAddress(env.arciumClusterOffset),
       compDefAccount: getCompDefAccAddress(program.programId,
-        Buffer.from(getCompDefAccOffset("evaluate_strategy")).readUInt32LE()),
+        Buffer.from(getCompDefAccOffset("evaluate_strategy_v2")).readUInt32LE()),
     }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
     await settle("evaluate_strategy", () => sawCallbackSince(startSlot));
     return program.account.tradeIntent.fetch(intentPda);

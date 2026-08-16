@@ -353,6 +353,30 @@ queued against it has finalized or expired — each of those has its own 180-slo
 life. Closing reclaims rent, which matters when the wallet is nearly empty from
 the failed attempts.
 
+On a shared cluster 6308 can outlast its 180 slots by a lot — other tenants'
+stale execpool entries keep the definition pinned. Survivable, because the rent
+is lopsided: closing the *buffers* returned 1.43 SOL of a 1.72 SOL registration
+while the definition account itself holds almost nothing. Take the buffer
+refund and leave the husk.
+
+### Changing a circuit's signature is not the same as changing its bytes
+
+The teardown above swaps circuit *bytes* at the same offset. It does not help
+when the parameter list changes, because the interface is recorded in the
+definition's `ComputationDefinitionMeta` at `init_computation_definition` and
+nothing re-points it. Adding one parameter to `evaluate_strategy` needed a whole
+new definition.
+
+An offset is `comp_def_offset(<circuit name>)`, so a new definition means a new
+*name* — `evaluate_strategy` became `evaluate_strategy_v2`. The macros derive
+Rust identifiers from that name and enforce it: the callback must be
+`evaluate_strategy_v2_callback` inside `EvaluateStrategyV2Callback`, and the
+build tells you exactly what to rename.
+
+Deactivate the old definition even when you cannot close it. A definition
+holding a circuit you have decided is wrong stays queueable until deactivated,
+and here "wrong" meant sizing every sell against the quote balance.
+
 **The second wait may not end.** On devnet this step failed 24 consecutive times
 across ~12 minutes, long after the definition's own TTL was satisfied
 (6,213 slots since deactivation, against a 180-slot requirement). Decoding the
@@ -389,199 +413,4 @@ Measured, on a fresh deployment:
 
 The program dominates: the actual computation costs about half a cent's worth
 of devnet SOL. Note this deploy did **not** pass `--max-len`, so the program
-remains upgradeable — see the rule at the end of this document.
-
-## Registering a circuit is three steps, not one
-
-Easy to get wrong, because the first two succeed on their own and leave an
-account that looks finished:
-
-1. `init_*_comp_def` — creates the computation definition account.
-2. `uploadCircuit` — writes the circuit bytes into buffer accounts, chunked.
-3. **finalize** — marks the definition usable.
-
-Skip step 3 and queueing fails with `ComputationDefinitionNotCompleted`
-(error 6300) even though the account exists, `circuitLen` matches the file, and
-the buffer reports `isCompleted: true`. Those fields describe the *upload*, not
-the definition.
-
-`getCircuitState(compDefAcc.circuitSource)` is the field that actually answers
-the question — `OnchainPending` versus `OnchainFinalized`. Note also that
-`uploadCircuit` returns early when state is anything other than `OnchainPending`,
-so re-running it after a partial upload logs `skipped` and does nothing.
-
-A related trap in our own test: it skipped `initAddTenCompDef` when the comp def
-account already existed, which also skipped the upload. Account existence is not
-the same as circuit readiness.
-
-## The successful run
-
-Program `FPZkMe1NgT3oug3iLoaWsnPjGAEr3p7mwporhfVqU7Lk` on Solana devnet, against
-Arcium's devnet cluster (offset `456`):
-
-| Step | Signature |
-|------|-----------|
-| MXE init + key recovery material | [`4qfG3x88…`](https://explorer.solana.com/tx/4qfG3x88Q6DN4YCoS6xgWb6xbgoUBkVCpsc6NF85dGgtbkKNoPsW3NiFV8ocba5RGUn3fhR3DvPforKkCWk84ZzQ?cluster=devnet) |
-| Queue `add_ten` | [`5FupwnPX…`](https://explorer.solana.com/tx/5FupwnPXHTexR9Y1z464hv9bD2Rhas1zuwviAzd33h8SrqVBacSnF5fbQxXUar2RBVcwSPhKZbsTZ9Tfp5mVHGoz?cluster=devnet) |
-| **Cluster callback, `verify_output` OK** | [`4n9nZAyk…`](https://explorer.solana.com/tx/4n9nZAyk4SyNWxkd37rgcD4T2t5dFsR62amjDJfNnEBCkvZwockucdH8axsDawrV2HSYevUFxnzXzG7AUkThHayz?cluster=devnet) |
-
-```
-queued:    5FupwnPXHTexR9Y1z464hv9bD2Rhas1zuwviAzd33h8SrqVBacSnF5fbQxXUar2RBVcwSPhKZbsTZ9Tfp5mVHGoz
-finalized: 3LzQL2bxdkLpdGRWt47oE41EPbip3xf33QhF2x8GHn5SYxrhdd1cVc71n5qSPrJvq51ZztcwGMeEaZo3ny48NPg4
-✔ computes x + 10 without revealing x (11555ms)
-1 passing
-```
-
-All three claims are now demonstrated rather than asserted: the result arrived
-through a cluster-signed callback, `x` never appeared in the ciphertext or the
-queue transaction, and decrypting gave 42.
-
-### First real latency number
-
-**~11.6 s** from queueing to a verified result, on devnet, for the smallest
-possible circuit. That is one sample on a shared devnet cluster, not a
-benchmark — but it is the first evidence for the latency budget in
-ARCHITECTURE §11, and it sits squarely in the "seconds, not milliseconds" range
-that shaped the product's positioning. A real strategy circuit will not be
-meaningfully slower, since the encryption envelope dominates (see above), but
-the queue wait depends on cluster load.
-
-### One quirk worth knowing
-
-`awaitComputationFinalization` returned a *later* transaction than the one that
-actually succeeded — a duplicate callback attempt that failed with
-`AlreadyCallbackedComputation` (6204). The successful callback is the earlier
-`4n9nZAyk…`. Do not treat the signature it returns as proof of success; check
-the emitted event, which is what the test asserts on.
-
-### The actual cause: a corrupt circuit we uploaded
-
-The first guess — version skew against the devnet nodes — was **wrong**, and
-worth recording as wrong. Every component is on the same version:
-
-| Component | Version |
-|-----------|---------|
-| `arcium` CLI | 0.14.1 |
-| `@arcium-hq/client` | 0.14.1 |
-| `arcis` (circuit crate) | 0.14.1 |
-| `arcium-anchor` / `arcium-client` | 0.14.1 |
-
-Reading the bytes settled it. The on-chain raw-circuit account holds a
-**different circuit than the one we compiled**:
-
-```
-local  build/add_ten.arcis   62,534 bytes  sha256 6d17f6b4…
-onchain raw circuit acc 0    62,543 bytes  (9-byte header + payload)
-        first differing byte at offset 814
-        1,485 trailing bytes never written
-```
-
-814 is not a coincidence: the Arcium `uploadCircuit` instruction takes a
-**fixed 814-byte chunk** plus an offset. Chunk 0 landed; later chunks did not.
-That is the rate-limited first upload attempt, which died partway through.
-
-Two things then conspired to hide it:
-
-1. **`isCompleted` is a flag, not a checksum.** `getCircuitState` returns
-   `OnchainFinalized` by reading `circuitSource.onChain[0].isCompleted` — it
-   never compares the stored bytes to anything. A half-written circuit reports
-   as finalized.
-2. **`uploadCircuit` returns early unless the state is `OnchainPending`.** Every
-   later attempt to fix the upload logged `skipped` and did nothing.
-
-So the cluster was faithfully fetching a corrupt circuit, failing to execute it,
-and aborting — exactly as a detect-and-abort protocol should. Nothing was wrong
-with Arcium, the cluster, or the callback wiring.
-
-**The lesson worth keeping:** there is no on-chain integrity check binding the
-stored circuit to the artifact you built. `build/add_ten.hash` exists locally
-(it is the sha256 of the `.arcis` file) but nothing on chain verifies it.
-Verifying the upload is the integrator's job.
-
-`tests/hello-arcium.ts` now does it: after any upload path it reads the raw
-circuit account back and compares it byte for byte with `build/add_ten.arcis`,
-failing with the offset and chunk index if they differ. A corrupt upload should
-fail immediately and say so, not surface hours later as an unexplained
-`verify_output` failure.
-
-### Recovering from a corrupt upload
-
-A finalized circuit is immutable — rewriting chunks returns
-`ComputationDefinitionAlreadyCompleted` (6303). The definition has to be torn
-down and rebuilt:
-
-```bash
-OFF=<comp offset>      # Buffer.from(getCompDefAccOffset("add_ten")).readUInt32LE()
-PID=<mxe program id>
-
-arcium deactivate-computation-definition -o $OFF -p $PID -k <kp> -u <rpc>
-# wait 180 slots (~72s)
-arcium close-computation-definition-buffers -o $OFF -p $PID -i 0 -k <kp> -u <rpc>
-arcium close-computation-definition -o $OFF -p $PID -c 456 -k <kp> -u <rpc>
-```
-
-Two waits, not one. The buffers close after the definition's own TTL, but
-`close-computation-definition` additionally fails with
-`ComputationDefinitionHasActiveComputations` (6308) until every computation
-queued against it has finalized or expired — each of those has its own 180-slot
-life. Closing reclaims rent, which matters when the wallet is nearly empty from
-the failed attempts.
-
-**The second wait may not end.** On devnet this step failed 24 consecutive times
-across ~12 minutes, long after the definition's own TTL was satisfied
-(6,213 slots since deactivation, against a 180-slot requirement). Decoding the
-cluster's executing pool shows why: it is **shared across every MXE on the
-cluster** and holds entries queued millions of slots ago. Clearing them is not
-something an integrator can do from the outside.
-
-So the documented teardown path is not reliably available on a shared cluster.
-Two ways around it:
-
-- **Rename the circuit.** The comp-def offset derives from the instruction name,
-  so `add_ten` → `add_ten_v2` yields a fresh definition and skips the teardown
-  entirely. Requires redeploying the program.
-- **Use a local cluster**, where the pool is yours and disposable.
-
-Which points at a deployment rule worth following: **do not pass `--max-len` on
-a program you may need to redeploy.** Sizing the data account to the exact
-binary halves the initial cost and then blocks every upgrade — the rebuilt
-binary here came out 32 bytes larger (466,744 vs 466,712) and could not be
-upgraded in place, which is precisely what made the rename unavailable as a
-recovery route.
-
-## Cost of the devnet run
-
-`uploadCircuit` writes the 62 KB circuit to chain in chunks. At 900 bytes per
-transaction that is ~70 transactions in quick succession, and
-`api.devnet.solana.com` rate-limits it into the ground: continuous HTTP 429s,
-then a stall with no further transactions landing.
-
-This is exactly the failure the Arcium docs warn about — *"Solana's default RPC
-endpoints can drop transactions during deployment"* — and it is a property of
-the endpoint, not of the code.
-
-**To finish, one of:**
-
-1. **A devnet RPC endpoint with a real rate limit** (Helius, QuickNode, Alchemy;
-   free tiers are sufficient). Then:
-
-   ```bash
-   ANCHOR_PROVIDER_URL=<your-devnet-rpc>    ANCHOR_WALLET=~/.config/solana/summit-devnet.json    ARCIUM_CLUSTER_OFFSET=456    npx ts-mocha -p ./tsconfig.json -t 300000 'tests/hello-arcium.ts'
-   ```
-
-2. **A working Docker engine**, then `arcium localnet` and `arcium test`. Docker
-   Desktop's UI starts but its engine does not respond on this machine, so the
-   local path is unavailable without intervention.
-
-Also worth knowing: devnet SOL is needed and `solana airdrop` is currently
-rate-limited too, so the wallet cannot be topped up from the CLI. The web faucet
-or an RPC provider's faucet is the fallback.
-
-## Open item
-
-Until the computation actually executes, the claim "computation runs through
-Arcium" is **deployed and wired, not demonstrated**. The circuit compiles, the
-programs build, the MXE is live with real cluster key material, and the test is
-written — but the loop has not closed. That gap is why the test skips instead of
-passing, and it should close before Phase 8 builds persistent encrypted state on
-top of it.
+remains upgradeable — see the `--max-len` rule above.

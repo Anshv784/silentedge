@@ -44,7 +44,7 @@ pub use oracle::*;
 pub use state::*;
 
 const COMP_DEF_OFFSET_STORE_STRATEGY: u32 = comp_def_offset("store_strategy");
-const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy");
+const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy_v2");
 
 declare_id!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ");
 
@@ -495,7 +495,7 @@ pub mod vault {
             ctx.accounts,
             computation_offset,
             args,
-            vec![EvaluateStrategyCallback::callback_ix(
+            vec![EvaluateStrategyV2Callback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
                 // Every account the callback struct declares must appear here
@@ -529,10 +529,10 @@ pub mod vault {
     /// This is the only writer of `TradeIntent`, and the only thing that can
     /// authorize vault funds into a swap. It authorizes a side and a size inside
     /// a slot window — never a destination, never a program, never a withdrawal.
-    #[arcium_callback(encrypted_ix = "evaluate_strategy")]
-    pub fn evaluate_strategy_callback(
-        ctx: Context<EvaluateStrategyCallback>,
-        output: SignedComputationOutputs<EvaluateStrategyOutput>,
+    #[arcium_callback(encrypted_ix = "evaluate_strategy_v2")]
+    pub fn evaluate_strategy_v2_callback(
+        ctx: Context<EvaluateStrategyV2Callback>,
+        output: SignedComputationOutputs<EvaluateStrategyV2Output>,
     ) -> Result<()> {
         require!(
             ctx.accounts.cluster_account.key() == expected_cluster(),
@@ -864,7 +864,7 @@ pub struct StoreStrategyCallback<'info> {
     pub strategy_state: Box<Account<'info, StrategyState>>,
 }
 
-#[queue_computation_accounts("evaluate_strategy", payer)]
+#[queue_computation_accounts("evaluate_strategy_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct EvaluateStrategy<'info> {
@@ -934,9 +934,9 @@ pub struct EvaluateStrategy<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("evaluate_strategy")]
+#[callback_accounts("evaluate_strategy_v2")]
 #[derive(Accounts)]
-pub struct EvaluateStrategyCallback<'info> {
+pub struct EvaluateStrategyV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_EVALUATE_STRATEGY))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
@@ -983,7 +983,7 @@ pub struct InitStoreStrategyCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[init_computation_definition_accounts("evaluate_strategy", payer)]
+#[init_computation_definition_accounts("evaluate_strategy_v2", payer)]
 #[derive(Accounts)]
 pub struct InitEvaluateStrategyCompDef<'info> {
     #[account(mut)]

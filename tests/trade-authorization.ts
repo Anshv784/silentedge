@@ -194,7 +194,7 @@ describe("vault — trade authorization", () => {
     );
     const names = writers.map((i: any) => i.name).sort();
     expect(names, "only init and the verified callback may write an intent").to.deep.equal(
-      ["evaluateStrategy", "evaluateStrategyCallback", "executeTrade", "initTradeIntent"].sort()
+      ["evaluateStrategy", "evaluateStrategyV2Callback", "executeTrade", "initTradeIntent"].sort()
     );
   });
 
