@@ -94,7 +94,8 @@ mod circuits {
     pub fn evaluate_strategy(
         strategy_ctxt: Enc<Mxe, Strategy>,
         price: u64,
-        vault_value: u64,
+        quote_value: u64,
+        base_value: u64,
     ) -> (u8, u64) {
         let s = strategy_ctxt.to_arcis();
 
@@ -113,18 +114,27 @@ mod circuits {
             0
         };
 
-        // Widened to u128 for the multiply: vault_value is in base units and
-        // size_bps can be 10_000, which overflows u64 for large vaults.
-        let sized = ((vault_value as u128 * s.size_bps as u128) / 10_000u128) as u64;
+        // The returned amount is always denominated in the mint being *spent*,
+        // because that is what `execute_trade` debits. A buy spends quote, a
+        // sell spends base. Sizing both from the quote balance — as this did
+        // until the swap made it observable — asks a stop-loss to sell a
+        // USDC-denominated quantity of SOL.
+        //
+        // Widened to u128 for the multiply: size_bps can be 10_000, which
+        // overflows u64 for large balances.
+        let buy_size = ((quote_value as u128 * s.size_bps as u128) / 10_000u128) as u64;
+        let sell_size = ((base_value as u128 * s.size_bps as u128) / 10_000u128) as u64;
 
         // A stop exits the whole position; anything else trades the configured
         // fraction. HOLD trades nothing.
         let amount = if stop_hit {
-            vault_value
-        } else if action == 0 {
-            0
+            base_value
+        } else if action == 2 {
+            sell_size
+        } else if action == 1 {
+            buy_size
         } else {
-            sized
+            0
         };
 
         (action.reveal(), amount.reveal())

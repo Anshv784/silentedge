@@ -29,11 +29,48 @@ converts this document into SECURITY_AUDIT.md with evidence.
 | ID | Threat | Mitigation | Residual |
 |----|--------|-----------|----------|
 | **T-1** | Operator withdraws user funds | No instruction accepts an operator authority. `withdraw` requires `owner` signature and sends only to `owner` — destination is not a parameter. | None, given a correct program. This is the load-bearing invariant; test it adversarially. |
-| **T-2** | Operator drains funds via a crafted "trade" | `execute_trade` moves tokens only between the *same vault's* two PDA-owned ATAs, both mints allowlisted, destination asserted to be the vault's own ATA, post-swap balance assertions. | Requires the swap program allowlist to be correct. Pin Jupiter's program ID; never accept a program ID from instruction data. |
+| **T-2** | Operator drains funds via a crafted "trade" | **Implemented.** See §2.1 — the route is untrusted by design; the program id is pinned and the vault's own balances are asserted across the CPI. | The route can still pick a bad-but-not-terrible fill inside the slippage band. Bounded, not eliminated. |
 | **T-3** | Operator upgrades the program to add a backdoor | **Not mitigated at V1.** Upgrade authority initially held by the deployer. | **Open — Q3.** Must move to timelocked multisig before mainnet. Until then, "non-custodial" is true of the deployed code but not of future code. Disclose this. |
 | **T-4** | Operator front-runs a withdrawal by pausing | `withdraw` is explicitly permitted while `Paused`. Pausing blocks new *trades* only. | None. Pausing must never trap funds — enforce in tests. |
 | **T-5** | Malicious user drains another user's vault | All vault PDAs seeded by `owner`; Anchor `has_one` constraints on every account; ATA ownership asserted. | Standard Solana account-confusion risk. Requires disciplined constraint review. |
 | **T-6** | Arithmetic overflow/underflow | `checked_*` everywhere; `overflow-checks = true` in release profile. | Low. |
+
+### 2.1 Why the swap CPI is not an arbitrary CPI executor
+
+`execute_trade` passes caller-supplied instruction data *and* a caller-supplied account
+list to another program. Stated that way it is the most dangerous instruction in the
+system, so it is worth being precise about what constrains it.
+
+The route is **not** validated. We do not parse Jupiter's instruction data, and we do not
+check which pools it touches — doing so would be a losing game against an aggregator whose
+routes change constantly. Instead:
+
+| | control |
+|---|---|
+| Program id | Pinned constant `JUP6Lkb…`, enforced as an account address constraint. Never read from instruction data. |
+| Source ATA | Derived from `vault_config`; the ATA for the side being spent. |
+| Destination ATA | Derived from `vault_config`. Not a parameter — there is nothing for a caller to point elsewhere. |
+| Amount out | `oracle_min_out()`, computed on chain from Pyth and the vault's own `max_slippage_bps`. **Not caller-supplied.** |
+| Signing | `invoke_signed` with the vault PDA seeds, and `is_signer` set for the vault PDA only. |
+
+And then, after the CPI returns, three assertions on the vault's own state:
+
+```
+source_before - source_after == amount_in     // exactly the authorized amount left
+dest_after - dest_before     >= min_out       // and the proceeds landed here
+vault_config.lamports        unchanged        // rent is not a funding source
+```
+
+The security argument is therefore *not* "the route is safe". It is that **any** route
+which fails to move exactly `amount_in` out of the vault's source ATA and at least
+`min_out` into the vault's destination ATA reverts the whole transaction. A route that
+tries to send proceeds elsewhere fails the second assertion. A route that spends more than
+authorized fails the first.
+
+The residual risk is real and worth naming: a route can fill *anywhere inside* the
+slippage band and pocket the difference. `max_slippage_bps` is the entire defence there,
+and it is the owner's setting. The floor being oracle-derived is what keeps that band
+honest — an executor-supplied floor would make the band meaningless.
 
 ---
 

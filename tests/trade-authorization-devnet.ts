@@ -29,6 +29,7 @@ const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 const BASE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 const QUOTE_MINT = new PublicKey("36X5x8D8jc15XD971iSC9cAB5puaA7zXc6dggA96rxbw");
 const PYTH_SOL_USD = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
+const JUPITER_PROGRAM = new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 
 const VAULT_SEED = Buffer.from("vault");
 const STRATEGY_SEED = Buffer.from("strategy");
@@ -212,7 +213,7 @@ describe("vault — authorization on devnet", function () {
     await program.methods.evaluateStrategy(off).accountsPartial({
       payer: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
       tradeIntent: intentPda, vaultQuoteAta: ata(vault, QUOTE_MINT, true),
-      priceUpdate: PYTH_SOL_USD,
+      vaultBaseAta: ata(vault, BASE_MINT, true), priceUpdate: PYTH_SOL_USD,
       computationAccount: getComputationAccAddress(env.arciumClusterOffset, off),
       clusterAccount: getClusterAccAddress(env.arciumClusterOffset),
       mxeAccount: getMXEAccAddress(program.programId),
@@ -280,10 +281,11 @@ describe("vault — authorization on devnet", function () {
     expect(s.mxeVersion, "version should have moved").to.be.greaterThan(authorizedVersion);
 
     try {
-      await program.methods.executeTrade().accountsPartial({
+      await program.methods.executeTrade(Buffer.alloc(0)).accountsPartial({
         executor: owner.publicKey, vaultConfig: vault, tradeIntent: intentPda,
         strategyState: strategyPda, vaultQuoteAta: ata(vault, QUOTE_MINT, true),
-        priceUpdate: PYTH_SOL_USD,
+        vaultBaseAta: ata(vault, BASE_MINT, true), priceUpdate: PYTH_SOL_USD,
+        jupiterProgram: JUPITER_PROGRAM,
       }).signers([owner]).rpc({ commitment: "confirmed" });
       expect.fail("executed an authorization bound to a replaced strategy");
     } catch (e) {

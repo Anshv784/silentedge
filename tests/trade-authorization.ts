@@ -32,6 +32,9 @@ const INTENT_SEED = Buffer.from("intent");
 /** Pyth's sponsored SOL/USD account on devnet, present in the fork. */
 const PYTH_SOL_USD = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
 
+/** Jupiter's aggregator. The only program execute_trade may CPI into. */
+const JUPITER_PROGRAM = new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+
 /** Arcium's cluster PDA seed and program, for the pinning check. */
 const ARCIUM_PROGRAM = new PublicKey("Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ");
 const CLUSTER_PDA_SEED = Buffer.from("Cluster");
@@ -104,14 +107,16 @@ describe("vault — trade authorization", () => {
 
   const executeTrade = (executor: Keypair, vault: PublicKey) =>
     program.methods
-      .executeTrade()
+      .executeTrade(Buffer.alloc(0))
       .accountsPartial({
         executor: executor.publicKey,
         vaultConfig: vault,
         tradeIntent: intentPda(vault),
         strategyState: strategyPda(vault),
         vaultQuoteAta: ata(vault, QUOTE_MINT, true),
+        vaultBaseAta: ata(vault, BASE_MINT, true),
         priceUpdate: PYTH_SOL_USD,
+        jupiterProgram: JUPITER_PROGRAM,
       })
       .signers([executor]);
 
@@ -218,6 +223,47 @@ describe("vault — trade authorization", () => {
     expect([...signers].sort(), "an unexpected signer role appeared").to.deep.equal(
       ["authority", "executor", "owner", "payer"]
     );
+  });
+
+  /**
+   * The CPI surface, which is the most dangerous thing this program exposes.
+   *
+   * `execute_trade` hands caller-supplied instruction data and a caller-supplied
+   * account list to another program. What stops that being an arbitrary CPI
+   * executor is narrow and worth asserting: the swap program is an *account*
+   * with a pinned address rather than an argument, and the output floor is
+   * derived on chain from the oracle rather than named by the caller.
+   *
+   * If a refactor ever moves either into the argument list, this fails.
+   */
+  it("takes the swap program and the output floor out of the caller's hands", async () => {
+    const idl: any = program.idl;
+    const ix = idl.instructions.find((i: any) => i.name === "executeTrade");
+
+    expect(
+      ix.args.map((a: any) => a.name),
+      "the route is the only thing the caller supplies"
+    ).to.deep.equal(["routeData"]);
+
+    const names = ix.accounts.map((a: any) => a.name);
+    expect(names, "the aggregator must be an account so it can be address-pinned")
+      .to.include("jupiterProgram");
+
+    const jup = ix.accounts.find((a: any) => a.name === "jupiterProgram");
+    expect(jup.address, "aggregator address must be pinned in the IDL").to.equal(
+      JUPITER_PROGRAM.toBase58()
+    );
+
+    // Both vault ATAs present, because either can be the swap source.
+    expect(names).to.include("vaultQuoteAta");
+    expect(names).to.include("vaultBaseAta");
+
+    // Nothing the caller can point at a wallet of their choosing.
+    for (const n of names) {
+      expect(n, `${n} looks like a caller-chosen destination`).to.not.match(
+        /destination|recipient|payout|receiver/i
+      );
+    }
   });
 
   /**

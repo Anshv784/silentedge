@@ -69,6 +69,39 @@ constrains the quote ATA against `vault_config.quote_mint`, not the constant.
 Changing the constant therefore does not repoint existing vaults; it needs a
 fresh owner, since the vault PDA is seeded by owner.
 
+## No single environment runs the whole path
+
+The two halves of the system need incompatible environments, and pretending
+otherwise produces tests that skip without saying so:
+
+| | Jupiter liquidity | Arcium MXE | covers |
+|---|---|---|---|
+| devnet | no | yes (cluster 456) | strategy → verified callback → `TradeIntent` |
+| surfpool **mainnet** fork | yes | no | `TradeIntent` → swap → post-conditions |
+
+The seam is `TradeIntent`. On the mainnet fork it is written directly with
+`surfnet_setAccount`, preserving the discriminator and bump the program itself
+wrote and forging only the authorization fields. That is deliberate: a
+test-only instruction that writes an intent would put a forged-authorization
+path into the shipped program, and `verify_output` cannot be mocked (RESEARCH
+§6). The cheatcode keeps the forgery in the test.
+
+The swap suite also needs the `mainnet` feature, or `QUOTE_MINT` is the devnet
+test mint, which does not exist on mainnet:
+
+```bash
+surfpool start --rpc-url "$MAINNET_RPC" --no-deploy
+anchor build -- --features mainnet
+anchor deploy --provider.cluster http://127.0.0.1:8899
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 \
+  npx ts-mocha -p ./tsconfig.json -t 300000 tests/swap-execution.ts
+```
+
+One Jupiter parameter is load-bearing: `wrapAndUnwrapSol=false`. The default
+unwraps wSOL, which closes the vault's wSOL ATA and sends native SOL — the
+post-swap balance assertion would fail, and it should, because that is not
+where vault funds are supposed to end up.
+
 ## Why TypeScript rather than Rust
 
 Anchor 1.x scaffolds `litesvm` + `cargo test`. That path was tried and

@@ -415,6 +415,65 @@ SOL tip. Since we are on the `/build` path, we do not get `/execute`'s protectio
 automatically; we can still submit through `tx.jup.ag` with a tip. Regardless, our primary
 defences must be on-chain: enforced `minimum_out`, an oracle sanity band, and intent expiry.
 
+### 4.3 Measured, not assumed (Phase 12)
+
+§4.1 argued from the docs that `maxAccounts` would make CPI viable. Measured against
+the live `GET https://api.jup.ag/swap/v2/build`, USDC→SOL, 500 USDC:
+
+| request | swap ix accounts | hops | out (lamports) |
+|---------|-----------------|------|----------------|
+| default | 43 | 3 | 6,647,762,591 |
+| `maxAccounts=30` | 42 | 2 | 6,647,648,655 |
+| `maxAccounts=24` | 38 | 2 | 6,647,680,641 |
+| `maxAccounts=16&onlyDirectRoutes` | **21–22** | 1 | 6,647,760,174 |
+
+Two things this changes:
+
+**`maxAccounts` alone does not do it.** At `maxAccounts=32` the instruction still carried
+43 accounts. It biases routing, it does not bound the account list. `onlyDirectRoutes=true`
+is what actually bounds it.
+
+**The cost of constraining is ~0.04 bps.** 2,417 lamports on 6.65 SOL, versus the
+unconstrained 3-hop route. §4.1 predicted this would be cheap for USDC↔SOL; it is.
+
+Size, compiled as a legacy message (CPI forfeits the route's 3 ALTs / 750 addresses):
+
+```
+jupiter swap ix accounts : 21
+unique accounts in tx    : 22      (vault ATAs already appear as swap source/destination)
+serialized message bytes : 819
+plus 1 signature         : 884
+limit                    : 1232  -> 348 bytes headroom
+```
+
+So the CPI fits with room for compute-budget instructions. The pessimistic reading — that
+43 account keys alone (1,376 bytes) blow the 1,232-byte limit — is true and is exactly why
+`onlyDirectRoutes` is not optional.
+
+**Swap program ID, confirmed live in the `/build` response:**
+`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4`. The docs pages do not publish it; this is
+read from the returned `swapInstruction.programId`. Pin it (T-2) — never take a program ID
+from instruction data.
+
+### 4.4 Devnet has no Jupiter liquidity
+
+The program is deployed on devnet at the same address, but routes do not exist for
+realistic pairs. Phase 12 therefore cannot be verified the way Phase 11 was.
+
+This also breaks the Phase 11 rig in the other direction: our devnet vault uses a test
+quote mint that does not exist on mainnet, and the Arcium MXE lives on devnet cluster 456,
+which a mainnet fork does not have. So no single environment runs the whole path:
+
+| environment | has Jupiter liquidity | has Arcium MXE | covers |
+|-------------|----------------------|----------------|--------|
+| devnet | no | yes | strategy → verified callback → `TradeIntent` |
+| surfpool mainnet fork | yes (forked state) | no | `TradeIntent` → swap → post-conditions |
+
+The seam is `TradeIntent`. On the fork it must be seeded directly rather than produced by a
+callback — `verify_output` cannot be mocked (§6), and adding a test-only instruction that
+writes an intent would put a forged-authorization path in the shipped program. Seed the
+account with a surfpool cheatcode instead, so nothing test-only enters the program.
+
 ---
 
 ## 5. Pyth

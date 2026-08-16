@@ -80,4 +80,23 @@ pub enum VaultError {
 
     #[msg("Arithmetic overflow scaling the oracle price")]
     ScalingOverflow,
+
+    // --- swap execution ---
+    #[msg("Vault does not hold enough of the input mint for this trade")]
+    InsufficientSourceBalance,
+
+    #[msg("Swap moved an unexpected amount out of the vault")]
+    UnexpectedSourceDelta,
+
+    #[msg("Swap returned less than the oracle-derived minimum")]
+    SlippageExceeded,
+
+    #[msg("Swap changed the vault account's lamports")]
+    VaultLamportsChanged,
+
+    #[msg("Trade intent carries an unknown side")]
+    UnknownSide,
+
+    #[msg("Swap program is not the pinned aggregator")]
+    SwapProgramNotAllowed,
 }

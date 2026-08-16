@@ -27,6 +27,10 @@ use anchor_spl::{
 };
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+};
 use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
 pub mod constants;
@@ -208,7 +212,10 @@ pub mod vault {
     /// The swap itself lands in the trading phase. Everything before it — the
     /// authorization checks — is here, because that is the part that has to be
     /// right before any funds move.
-    pub fn execute_trade(ctx: Context<ExecuteTrade>) -> Result<()> {
+    pub fn execute_trade<'info>(
+        ctx: Context<'info, ExecuteTrade<'info>>,
+        route_data: Vec<u8>,
+    ) -> Result<()> {
         let clock = Clock::get()?;
         let vault = &ctx.accounts.vault_config;
         let intent = &ctx.accounts.trade_intent;
@@ -232,31 +239,127 @@ pub mod vault {
             VaultError::IntentExpired
         );
 
-        // The vault's own cap, applied to the vault's own balance. A decision
-        // cannot authorize more than its owner allowed, whatever the circuit said.
-        let vault_value = ctx.accounts.vault_quote_ata.amount;
-        let max_trade = (vault_value as u128)
-            .checked_mul(vault.limits.max_trade_bps as u128)
+        let side = intent.side;
+        let amount_in = intent.amount_in;
+        let max_slippage_bps = vault.limits.max_slippage_bps;
+        let max_trade_bps = vault.limits.max_trade_bps;
+
+        // Which ATA funds the swap depends on the direction. Getting this
+        // backwards would size a sell against the wrong balance.
+        let (src_before, dst_before) = match side {
+            SIDE_BUY => (
+                ctx.accounts.vault_quote_ata.amount,
+                ctx.accounts.vault_base_ata.amount,
+            ),
+            SIDE_SELL => (
+                ctx.accounts.vault_base_ata.amount,
+                ctx.accounts.vault_quote_ata.amount,
+            ),
+            _ => return err!(VaultError::UnknownSide),
+        };
+        require!(
+            src_before >= amount_in,
+            VaultError::InsufficientSourceBalance
+        );
+
+        // The vault's own cap, applied to the balance actually being spent. A
+        // decision cannot authorize more than its owner allowed, whatever the
+        // circuit said.
+        let max_trade = (src_before as u128)
+            .checked_mul(max_trade_bps as u128)
             .ok_or(VaultError::Overflow)?
             .checked_div(BPS_DENOMINATOR as u128)
             .ok_or(VaultError::Overflow)? as u64;
-        require!(intent.amount_in <= max_trade, VaultError::TradeTooLarge);
+        require!(amount_in <= max_trade, VaultError::TradeTooLarge);
 
-        // A fresh oracle read at execution time, not the one the decision used.
-        // Phase 12 bounds the realised fill against this.
+        // A fresh oracle read at execution time, not the one the decision used,
+        // and the floor the swap must clear.
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
+        let min_out = oracle_min_out(side, amount_in, price, max_slippage_bps)?;
+
+        let vault_key = ctx.accounts.vault_config.key();
+        let lamports_before = ctx.accounts.vault_config.to_account_info().lamports();
+
+        // --- the swap ---
+        //
+        // The route is opaque to us: Jupiter's instruction data and its account
+        // list both come from the caller. What makes that safe is not trusting
+        // the route, it is that the program id is pinned and the vault's own
+        // balances are asserted afterwards. The route may do anything it likes
+        // so long as exactly `amount_in` leaves the source ATA and at least
+        // `min_out` arrives in the destination ATA.
+        let metas: Vec<AccountMeta> = ctx
+            .remaining_accounts
+            .iter()
+            .map(|a| AccountMeta {
+                pubkey: *a.key,
+                // The vault PDA is the swap's transfer authority. It cannot sign
+                // the outer transaction, so it is signed for here instead.
+                is_signer: *a.key == vault_key,
+                is_writable: a.is_writable,
+            })
+            .collect();
+
+        let ix = Instruction {
+            program_id: JUPITER_PROGRAM_ID,
+            accounts: metas,
+            data: route_data,
+        };
+
+        let owner = ctx.accounts.vault_config.owner;
+        let bump = ctx.accounts.vault_config.bump;
+        let seeds: &[&[u8]] = &[VAULT_SEED, owner.as_ref(), &[bump]];
+
+        let mut infos = ctx.remaining_accounts.to_vec();
+        infos.push(ctx.accounts.jupiter_program.to_account_info());
+        invoke_signed(&ix, &infos, &[seeds])?;
+
+        // --- what the swap was allowed to do ---
+        ctx.accounts.vault_quote_ata.reload()?;
+        ctx.accounts.vault_base_ata.reload()?;
+        let (src_after, dst_after) = match side {
+            SIDE_BUY => (
+                ctx.accounts.vault_quote_ata.amount,
+                ctx.accounts.vault_base_ata.amount,
+            ),
+            _ => (
+                ctx.accounts.vault_base_ata.amount,
+                ctx.accounts.vault_quote_ata.amount,
+            ),
+        };
+
+        // Exactly the authorized amount left, and it left the right account.
+        require!(
+            src_before.saturating_sub(src_after) == amount_in,
+            VaultError::UnexpectedSourceDelta
+        );
+        // The proceeds landed in this vault, not somewhere else.
+        require!(
+            dst_after.saturating_sub(dst_before) >= min_out,
+            VaultError::SlippageExceeded
+        );
+        // Rent is not a funding source for a swap.
+        require!(
+            ctx.accounts.vault_config.to_account_info().lamports() == lamports_before,
+            VaultError::VaultLamportsChanged
+        );
+
+        let amount_out = dst_after.saturating_sub(dst_before);
 
         let intent = &mut ctx.accounts.trade_intent;
         intent.consumed = true;
         intent.oracle_price = price;
+        intent.min_amount_out = min_out;
 
         let vault = &mut ctx.accounts.vault_config;
         vault.nonce = vault.nonce.checked_add(1).ok_or(VaultError::Overflow)?;
 
         emit!(TradeExecuted {
             vault: vault.key(),
-            side: intent.side,
-            amount_in: intent.amount_in,
+            side,
+            amount_in,
+            amount_out,
+            min_amount_out: min_out,
             oracle_price: price,
         });
         Ok(())
@@ -371,9 +474,11 @@ pub mod vault {
 
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
 
-        // Read from the vault's own account rather than trusting an argument.
-        // Quote-denominated: this is what a trade is sized against.
-        let vault_value = ctx.accounts.vault_quote_ata.amount;
+        // Read from the vault's own accounts rather than trusting arguments.
+        // Both balances, because a buy spends quote and a sell spends base —
+        // the circuit must size each against the balance it will actually debit.
+        let quote_value = ctx.accounts.vault_quote_ata.amount;
+        let base_value = ctx.accounts.vault_base_ata.amount;
 
         let args = ArgBuilder::new()
             .plaintext_u128(strategy.mxe_nonce)
@@ -382,7 +487,8 @@ pub mod vault {
             .encrypted_u64(strategy.mxe_ciphertexts[2])
             .encrypted_u64(strategy.mxe_ciphertexts[3])
             .plaintext_u64(price)
-            .plaintext_u64(vault_value)
+            .plaintext_u64(quote_value)
+            .plaintext_u64(base_value)
             .build();
 
         queue_computation(
@@ -790,6 +896,11 @@ pub struct EvaluateStrategy<'info> {
         associated_token::authority = vault_config,
     )]
     pub vault_quote_ata: Box<Account<'info, TokenAccount>>,
+    #[account(
+        associated_token::mint = vault_config.base_mint,
+        associated_token::authority = vault_config,
+    )]
+    pub vault_base_ata: Box<Account<'info, TokenAccount>>,
     pub price_update: Box<Account<'info, PriceUpdateV2>>,
     #[account(
         init_if_needed,
@@ -914,12 +1025,26 @@ pub struct ExecuteTrade<'info> {
         bump = strategy_state.bump,
     )]
     pub strategy_state: Box<Account<'info, StrategyState>>,
+    /// Both vault ATAs, because either can be the source depending on side.
+    /// Derived from `vault_config`, never passed loose — a destination the
+    /// caller can choose is a rug waiting for a bug.
     #[account(
+        mut,
         associated_token::mint = vault_config.quote_mint,
         associated_token::authority = vault_config,
     )]
     pub vault_quote_ata: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
+        associated_token::mint = vault_config.base_mint,
+        associated_token::authority = vault_config,
+    )]
+    pub vault_base_ata: Box<Account<'info, TokenAccount>>,
     pub price_update: Box<Account<'info, PriceUpdateV2>>,
+    /// Pinned. The only program this instruction will CPI into.
+    #[account(address = JUPITER_PROGRAM_ID @ VaultError::SwapProgramNotAllowed)]
+    /// CHECK: address-constrained to the pinned aggregator; invoked, not read.
+    pub jupiter_program: UncheckedAccount<'info>,
 }
 
 #[event]
@@ -927,6 +1052,10 @@ pub struct TradeExecuted {
     pub vault: Pubkey,
     pub side: u8,
     pub amount_in: u64,
+    /// What the swap actually delivered into the vault.
+    pub amount_out: u64,
+    /// The oracle-derived floor it had to clear.
+    pub min_amount_out: u64,
     pub oracle_price: u64,
 }
 

@@ -16,6 +16,7 @@ use pyth_solana_receiver_sdk::price_update::{get_feed_id_from_hex, PriceUpdateV2
 
 // Anchor permits exactly one #[error_code] enum per program, so the oracle's
 // failures live in the program-wide enum rather than their own.
+use crate::constants::{BASE_DECIMALS_POW, BPS_DENOMINATOR, SIDE_BUY, SIDE_SELL};
 use crate::VaultError as OracleError;
 
 /// SOL/USD. Same feed id on every cluster — it identifies the feed, not the
@@ -118,6 +119,53 @@ pub fn scale_to_price_decimals(value: u128, exponent: i32) -> Result<u64> {
     u64::try_from(scaled).map_err(|_| OracleError::ScalingOverflow.into())
 }
 
+/// The minimum output a swap must deliver, derived on chain from the oracle.
+///
+/// A caller-supplied floor is the whole vulnerability. An executor that names
+/// its own `min_amount_out` can route the vault's funds through a pool it
+/// controls, fill at a ruinous price, and keep the difference — and the swap
+/// still "succeeds". Deriving the floor from Pyth and the vault's own slippage
+/// limit leaves the executor one choice only: whether to submit.
+///
+/// Assumes the quote mint's decimals equal `PRICE_DECIMALS` (both 6, USDC), so
+/// they cancel. A quote mint with different decimals needs this revisited.
+pub fn oracle_min_out(
+    side: u8,
+    amount_in: u64,
+    price: u64,
+    max_slippage_bps: u16,
+) -> Result<u64> {
+    require!(price > 0, OracleError::NonPositivePrice);
+    require!(
+        max_slippage_bps < BPS_DENOMINATOR,
+        OracleError::SlippageExceeded
+    );
+
+    let a = amount_in as u128;
+    let p = price as u128;
+
+    // BUY spends quote (6dp) to get base (9dp): base = quote * 1e9 / price
+    // SELL spends base (9dp) to get quote (6dp): quote = base * price / 1e9
+    let expected = match side {
+        SIDE_BUY => a
+            .checked_mul(BASE_DECIMALS_POW)
+            .and_then(|v| v.checked_div(p)),
+        SIDE_SELL => a
+            .checked_mul(p)
+            .and_then(|v| v.checked_div(BASE_DECIMALS_POW)),
+        _ => return err!(OracleError::UnknownSide),
+    }
+    .ok_or(OracleError::Overflow)?;
+
+    let keep = (BPS_DENOMINATOR - max_slippage_bps) as u128;
+    let min_out = expected
+        .checked_mul(keep)
+        .and_then(|v| v.checked_div(BPS_DENOMINATOR as u128))
+        .ok_or(OracleError::Overflow)?;
+
+    u64::try_from(min_out).map_err(|_| OracleError::Overflow.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +195,57 @@ mod tests {
     #[test]
     fn rejects_values_that_do_not_fit_u64() {
         assert!(scale_to_price_decimals(u128::MAX, -6).is_err());
+    }
+
+    // --- oracle_min_out ---
+    //
+    // Checked against a live Jupiter quote: 500 USDC -> 6,647,760,174 lamports
+    // at a SOL/USD of about $75.29 (RESEARCH §4.3). The floor must sit just
+    // below a real fill, or every honest swap reverts.
+
+    const P: u64 = 75_290_000; // $75.29
+    const USDC_500: u64 = 500_000_000;
+
+    #[test]
+    fn buy_floor_tracks_a_real_quote() {
+        let exact = oracle_min_out(SIDE_BUY, USDC_500, P, 0).unwrap();
+        assert_eq!(exact, 6_640_988_179); // 500e6 * 1e9 / 75_290_000
+        // A real fill of 6,647,760,174 must clear a 50 bps floor.
+        let floor = oracle_min_out(SIDE_BUY, USDC_500, P, 50).unwrap();
+        assert!(floor < 6_647_760_174, "floor {floor} would reject an honest fill");
+        assert_eq!(floor, exact * 9_950 / 10_000);
+    }
+
+    #[test]
+    fn sell_floor_is_the_inverse() {
+        let out = oracle_min_out(SIDE_SELL, 6_647_760_174, P, 0).unwrap();
+        // Round-trips to ~500 USDC. Not exact: the lamport figure is a real
+        // Jupiter fill, which beat the oracle-implied amount, so the inverse
+        // comes back slightly above 500. Within 1 USDC is the check that matters.
+        assert!((out as i64 - USDC_500 as i64).abs() < 1_000_000, "got {out}");
+    }
+
+    #[test]
+    fn slippage_only_ever_lowers_the_floor() {
+        let none = oracle_min_out(SIDE_BUY, USDC_500, P, 0).unwrap();
+        let some = oracle_min_out(SIDE_BUY, USDC_500, P, 50).unwrap();
+        let lots = oracle_min_out(SIDE_BUY, USDC_500, P, 9_999).unwrap();
+        assert!(lots < some && some < none);
+    }
+
+    #[test]
+    fn refuses_inputs_that_would_make_the_floor_meaningless() {
+        assert!(oracle_min_out(SIDE_BUY, USDC_500, 0, 50).is_err(), "zero price");
+        assert!(oracle_min_out(SIDE_BUY, USDC_500, P, 10_000).is_err(), "100% slippage");
+        assert!(oracle_min_out(0, USDC_500, P, 50).is_err(), "HOLD is not tradeable");
+        assert!(oracle_min_out(9, USDC_500, P, 50).is_err(), "unknown side");
+    }
+
+    #[test]
+    fn does_not_overflow_on_absurd_amounts() {
+        // u64::MAX * 1e9 overflows u128 only above ~3.4e29; check it is handled
+        // rather than wrapping into a tiny, trivially-satisfied floor.
+        let r = oracle_min_out(SIDE_BUY, u64::MAX, 1, 0);
+        assert!(r.is_err(), "expected overflow, got {r:?}");
     }
 }

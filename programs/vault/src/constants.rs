@@ -64,6 +64,25 @@ pub const GUARDIAN: Pubkey = pubkey!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfN
 #[cfg(feature = "mainnet")]
 pub const GUARDIAN: Pubkey = pubkey!("J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ");
 
+/// Jupiter aggregator — the only program `execute_trade` will ever CPI into.
+///
+/// Read from the live `GET /swap/v2/build` response's `swapInstruction.programId`;
+/// Jupiter's docs pages do not publish it. Same address on devnet, though devnet
+/// has no routable liquidity (RESEARCH §4.4).
+///
+/// Pinned as a constant on purpose. Accepting a swap program id from instruction
+/// data would make this an arbitrary CPI executor, which is the single most
+/// dangerous thing a vault can expose. See THREAT_MODEL T-2.
+pub const JUPITER_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+
+/// `TradeIntent.side` values. 0 never reaches an intent — HOLD writes nothing.
+pub const SIDE_BUY: u8 = 1;
+pub const SIDE_SELL: u8 = 2;
+
+/// Decimals of the two mints, used to convert an oracle price into an expected
+/// output amount. wSOL is 9, USDC is 6.
+pub const BASE_DECIMALS_POW: u128 = 1_000_000_000;
+
 /// Basis-point denominator.
 pub const BPS_DENOMINATOR: u16 = 10_000;
 
