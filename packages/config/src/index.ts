@@ -18,9 +18,15 @@ export const BASE_MINT = new PublicKey(
   "So11111111111111111111111111111111111111112"
 );
 
-/** USDC. Devnet value; mainnet is EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v. */
+/**
+ * Devnet test mint standing in for USDC; mainnet is
+ * EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.
+ *
+ * Must match `QUOTE_MINT` in programs/vault/src/constants.rs — `initialize_vault`
+ * rejects any other mint. See that file for why devnet does not use Circle's.
+ */
 export const QUOTE_MINT = new PublicKey(
-  "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+  "36X5x8D8jc15XD971iSC9cAB5puaA7zXc6dggA96rxbw"
 );
 
 export const VAULT_SEED = "vault";

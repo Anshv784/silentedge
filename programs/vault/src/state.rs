@@ -143,7 +143,13 @@ pub struct TradeIntent {
     pub side: u8,
     /// Input amount in the source mint's base units.
     pub amount_in: u64,
-    /// Floor on the output. The executor cannot fill worse than this.
+    /// Floor on the output, in the destination mint's base units.
+    ///
+    /// NOT YET ENFORCED. The callback writes 0 and `execute_trade` moves no
+    /// funds, so nothing reads this today. The swap lands in the trading phase,
+    /// and it must set this from a fresh quote bounded by
+    /// `RiskLimits.max_slippage_bps` *before* any CPI — a swap submitted while
+    /// this is still 0 has no slippage floor at all.
     pub min_amount_out: u64,
     /// Slot after which this authorization is dead.
     pub expires_at_slot: u64,

@@ -41,9 +41,16 @@ pub const EXPECTED_CLUSTER_OFFSET_MAINNET: u32 = 2026;
 /// Wrapped SOL. Same address on every cluster.
 pub const BASE_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
-/// USDC. Circle's canonical mint, per cluster.
+/// USDC on mainnet; a test mint on devnet.
+///
+/// Circle holds the mint authority for devnet USDC (`4zMMC9sr…`), so a test
+/// cannot fund a vault with it — and a vault holding nothing evaluates every
+/// strategy to a zero-sized trade, which leaves the authorization path
+/// unexercised. This mint is ours, 6 decimals like USDC, so devnet tests can
+/// mint what they need. It is a fixture, not a claim about liquidity: nothing
+/// off devnet references it, and the mainnet arm below is untouched.
 #[cfg(not(feature = "mainnet"))]
-pub const QUOTE_MINT: Pubkey = pubkey!("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+pub const QUOTE_MINT: Pubkey = pubkey!("36X5x8D8jc15XD971iSC9cAB5puaA7zXc6dggA96rxbw");
 #[cfg(feature = "mainnet")]
 pub const QUOTE_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 

@@ -18,7 +18,9 @@ liquidity is not representative.
 
 ```bash
 # 1. Start the fork (leave running)
-surfpool start --network devnet --no-deploy
+#    Use --rpc-url, not --network devnet: the latter forks the throttled public
+#    endpoint and the suite dies on "Blockhash not found" partway through.
+surfpool start --rpc-url "$DEVNET_RPC" --no-deploy
 
 # 2. Build and deploy
 anchor build
@@ -32,8 +34,9 @@ npx ts-mocha -p ./tsconfig.json -t 120000 'tests/**/*.ts'
 
 ## Funding test accounts
 
-Circle holds the devnet USDC mint authority, so tests cannot mint. Surfpool's
-cheatcode writes balances directly and creates the ATA if needed:
+Circle holds the devnet USDC mint authority, so tests cannot mint it. On the
+fork, Surfpool's cheatcode writes balances directly and creates the ATA if
+needed:
 
 ```ts
 await connection._rpcRequest("surfnet_setTokenAccount", [
@@ -42,6 +45,29 @@ await connection._rpcRequest("surfnet_setTokenAccount", [
   { amount: 1_000_000 },
 ]);
 ```
+
+On real devnet that cheatcode does not exist, and this is not cosmetic: the
+circuit sizes a trade from the vault's quote balance, so a vault that cannot be
+funded evaluates every strategy to a zero-sized trade and the positive
+authorization path never runs. The suite would pass while proving only that
+nothing happens.
+
+So devnet's `QUOTE_MINT` is our own 6-decimal mint,
+`36X5x8D8jc15XD971iSC9cAB5puaA7zXc6dggA96rxbw`, rather than Circle's. It is a
+fixture and nothing more — the mainnet arm of the `#[cfg]` in
+`programs/vault/src/constants.rs` still points at real USDC, and the mint
+address must stay in sync with `packages/config/src/index.ts` or
+`initialize_vault` rejects the vault.
+
+```bash
+spl-token create-token --decimals 6 --mint-authority <your-keypair>
+spl-token mint <MINT> 10000 --recipient-owner <test-owner>
+```
+
+Note that a vault stores its mints at creation, and `evaluate_strategy`
+constrains the quote ATA against `vault_config.quote_mint`, not the constant.
+Changing the constant therefore does not repoint existing vaults; it needs a
+fresh owner, since the vault PDA is seeded by owner.
 
 ## Why TypeScript rather than Rust
 

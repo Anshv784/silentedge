@@ -700,13 +700,13 @@ pub struct ConvertStrategy<'info> {
         seeds = [VAULT_SEED, payer.key().as_ref()],
         bump = vault_config.bump,
     )]
-    pub vault_config: Account<'info, VaultConfig>,
+    pub vault_config: Box<Account<'info, VaultConfig>>,
     #[account(
         mut,
         seeds = [STRATEGY_SEED, vault_config.key().as_ref()],
         bump = strategy_state.bump,
     )]
-    pub strategy_state: Account<'info, StrategyState>,
+    pub strategy_state: Box<Account<'info, StrategyState>>,
     #[account(
         init_if_needed,
         space = 9,

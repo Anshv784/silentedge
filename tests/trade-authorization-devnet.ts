@@ -16,7 +16,7 @@ import { randomBytes } from "crypto";
 import fs from "fs";
 import { expect } from "chai";
 import {
-  awaitComputationFinalization, getArciumEnv, getCompDefAccOffset, getArciumProgram,
+  getArciumEnv, getCompDefAccOffset, getArciumProgram,
   RescueCipher, deserializeLE, getMXEPublicKey, getMXEAccAddress, getMempoolAccAddress,
   getCompDefAccAddress, getExecutingPoolAccAddress, getComputationAccAddress,
   getClusterAccAddress, x25519,
@@ -27,7 +27,7 @@ const { PublicKey, Keypair, SystemProgram } = web3Pkg;
 const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const BASE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
-const QUOTE_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+const QUOTE_MINT = new PublicKey("36X5x8D8jc15XD971iSC9cAB5puaA7zXc6dggA96rxbw");
 const PYTH_SOL_USD = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
 
 const VAULT_SEED = Buffer.from("vault");
@@ -39,6 +39,9 @@ const fmt = (v: bigint) => `$${(Number(v) / 1e6).toFixed(2)}`;
 const NEVER_SELL = 18_446_744_073_709_551_615n;
 const NEVER_BUY = 0n;
 const SIZE_BPS = 1_000n;
+/** Funds the vault so a sized trade is non-zero. 10% of this is the trade. */
+const DEPOSIT = usd(5_000);
+const FINALIZE_TIMEOUT_MS = 240_000;
 
 describe("vault — authorization on devnet", function () {
   this.timeout(900_000);
@@ -62,13 +65,24 @@ describe("vault — authorization on devnet", function () {
     return a;
   };
 
-  const awaitEvent = async (name: string): Promise<any> => {
-    let id: number;
-    const ev = await new Promise<any>((res) => {
-      id = program.addEventListener(name as never, (e: any) => res(e));
-    });
-    await program.removeEventListener(id!);
-    return ev;
+  /**
+   * Poll until a queued computation has visibly taken effect on chain.
+   *
+   * `awaitComputationFinalization` listens on a websocket subscription, and a
+   * dropped subscription leaves it waiting forever — the callback lands, the
+   * state changes, and the test hangs anyway. That is not hypothetical; it hung
+   * a full run here. Waiting on the state change the callback *causes* needs no
+   * subscription and asserts something stronger: not that a computation
+   * finished, but that it did what it was supposed to do.
+   */
+  const settle = async (label: string, done: () => Promise<boolean>) => {
+    const deadline = Date.now() + FINALIZE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      // Devnet RPC drops connections; a transient failure is not a verdict.
+      if (await done().catch(() => false)) return;
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+    throw new Error(`${label}: no on-chain effect within ${FINALIZE_TIMEOUT_MS}ms`);
   };
 
   let env: any;
@@ -79,8 +93,10 @@ describe("vault — authorization on devnet", function () {
       env = getArciumEnv();
       await arciumProgram.account.mxeAccount.fetch(getMXEAccAddress(program.programId));
       mxePublicKey = await getMXEPublicKey(provider, program.programId);
-    } catch {
-      console.log("      no vault MXE reachable — skipping");
+    } catch (e) {
+      // Say why. A silent skip reads as "covered" in a test log, which is the
+      // one thing this suite must never imply.
+      console.log(`      no vault MXE reachable — skipping: ${e}`);
       this.skip();
       return;
     }
@@ -106,6 +122,22 @@ describe("vault — authorization on devnet", function () {
         systemProgram: SystemProgram.programId,
       }).signers([owner]).rpc({ commitment: "confirmed" });
     }
+
+    // The circuit sizes a trade from the vault's quote balance, so an empty
+    // vault evaluates every strategy to a zero-sized trade and the positive
+    // authorization path never runs. Fund it through the real deposit path.
+    const vaultQuote = ata(vault, QUOTE_MINT, true);
+    const bal = await provider.connection
+      .getTokenAccountBalance(vaultQuote)
+      .catch(() => null);
+    if (!bal || BigInt(bal.value.amount) === 0n) {
+      await program.methods.deposit(new BN(DEPOSIT.toString())).accountsPartial({
+        owner: owner.publicKey, vaultConfig: vault, mint: QUOTE_MINT,
+        ownerAta: ata(owner.publicKey, QUOTE_MINT), vaultAta: vaultQuote,
+        tokenProgram: TOKEN_PROGRAM,
+      }).signers([owner]).rpc({ commitment: "confirmed" });
+      console.log(`      deposited ${fmt(DEPOSIT)}`);
+    }
   });
 
   async function livePrice(): Promise<bigint> {
@@ -118,6 +150,8 @@ describe("vault — authorization on devnet", function () {
 
   /** Submit a strategy, then have the cluster re-encrypt it to Enc<Mxe, _>. */
   async function submitAndConvert(fields: bigint[]) {
+    const prior = await program.account.strategyState
+      .fetch(strategyPda).then((s: any) => s.mxeVersion).catch(() => 0);
     const priv = x25519.utils.randomSecretKey();
     const pub = x25519.getPublicKey(priv);
     const cipher = new RescueCipher(x25519.getSharedSecret(priv, mxePublicKey));
@@ -144,12 +178,36 @@ describe("vault — authorization on devnet", function () {
       compDefAccount: getCompDefAccAddress(program.programId,
         Buffer.from(getCompDefAccOffset("store_strategy")).readUInt32LE()),
     }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
-    await awaitComputationFinalization(provider, off, program.programId, "confirmed");
+    // The version advancing IS the callback's effect — an unambiguous signal
+    // that does not depend on a websocket staying up.
+    await settle("convert_strategy", async () =>
+      (await program.account.strategyState.fetch(strategyPda)).mxeVersion > prior
+    );
+  }
+
+  /**
+   * Did a callback actually execute since `slot`?
+   *
+   * "Nothing changed" is the expected result for HOLD, and it is also what a
+   * callback that reverted looks like. Without this the HOLD case passes
+   * whether the program worked or not.
+   */
+  async function sawCallbackSince(slot: number): Promise<boolean> {
+    const sigs = await provider.connection.getSignaturesForAddress(
+      program.programId, { limit: 25 }, "confirmed");
+    for (const s of sigs) {
+      if ((s.slot ?? 0) < slot || s.err) continue;
+      const tx = await provider.connection.getTransaction(s.signature, {
+        commitment: "confirmed", maxSupportedTransactionVersion: 0,
+      });
+      if (tx?.meta?.logMessages?.some((l) => l.includes("EvaluateStrategyCallback")))
+        return true;
+    }
+    return false;
   }
 
   async function evaluate() {
-    const authorized = awaitEvent("tradeAuthorized").catch(() => null);
-    const held = awaitEvent("evaluationHeld").catch(() => null);
+    const startSlot = await provider.connection.getSlot("confirmed");
     const off = new BN(randomBytes(8), "hex");
     await program.methods.evaluateStrategy(off).accountsPartial({
       payer: owner.publicKey, vaultConfig: vault, strategyState: strategyPda,
@@ -163,8 +221,7 @@ describe("vault — authorization on devnet", function () {
       compDefAccount: getCompDefAccAddress(program.programId,
         Buffer.from(getCompDefAccOffset("evaluate_strategy")).readUInt32LE()),
     }).signers([owner]).rpc({ skipPreflight: true, commitment: "confirmed" });
-    await awaitComputationFinalization(provider, off, program.programId, "confirmed");
-    await Promise.race([authorized, held, new Promise((r) => setTimeout(r, 8000))]);
+    await settle("evaluate_strategy", () => sawCallbackSince(startSlot));
     return program.account.tradeIntent.fetch(intentPda);
   }
 
