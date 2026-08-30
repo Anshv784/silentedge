@@ -657,30 +657,53 @@ body::after {
   animation: pop 380ms var(--ease-pop) both;
 }
 
-/* Scroll reveals, CSS-only. No scroll listener anywhere on the landing. */
-@supports (animation-timeline: view()) {
-  .reveal {
-    animation: rise 320ms var(--ease-arrive) both;
-    animation-timeline: view();
-    animation-range: entry 8% cover 26%;
-  }
+/* Scroll reveals.
+ *
+ * This used `animation-timeline: view()` with `animation-fill-mode: both`,
+ * which holds every not-yet-scrolled element at the keyframe's `from` state —
+ * `opacity: 0`. Correct while scrolling, and catastrophic for any full-page
+ * capture: link previews, PDF exports and screenshot tools all render the page
+ * at full height without scrolling it, so four of six sections came out blank.
+ *
+ * An IntersectionObserver adds `.is-in` instead. It fires for everything a
+ * full-height capture puts in view, so a capture shows the real page, and there
+ * is a timeout in the observer that reveals everything unconditionally if it
+ * never runs. Nothing on this page is allowed to default to invisible with no
+ * way back — that is the third time this exact failure has appeared here.
+ */
+.reveal {
+  opacity: 0;
+  transform: translate3d(0, 16px, 0);
+  transition:
+    opacity 320ms var(--ease-arrive),
+    transform 320ms var(--ease-arrive);
 }
-@supports not (animation-timeline: view()) {
-  .reveal {
-    animation: rise 320ms var(--ease-arrive) both;
-  }
+.reveal.is-in {
+  opacity: 1;
+  transform: none;
 }
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 16px, 0);
+/* No script, no observer, no hiding. */
+html:not(.js) .reveal {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
   }
 }
 
-/* Off-screen sections cost no layout and no paint. */
+/* `content-visibility: auto` was here and has been removed deliberately.
+   It skips rendering off-screen sections, which is free performance on a long
+   page — but this page is five screens, so the saving is small, and the cost is
+   that any full-page capture comes out blank below the fold. Link previews,
+   PDF exports and screenshot tools all do exactly that, and this page exists to
+   be looked at by people who were sent a link. A blank preview is a worse
+   outcome than a few milliseconds of paint. */
 .defer {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 900px;
+  content-visibility: visible;
 }
 
 /* -------------------------------------------------------- reduced motion */

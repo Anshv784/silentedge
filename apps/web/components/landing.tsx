@@ -463,6 +463,110 @@ function LockGlyph() {
   );
 }
 
+
+/* --------------------------------------------------------------- countup */
+
+/**
+ * A whole number that counts in when it scrolls into view.
+ *
+ * Only ever used on fixed counts — tests, instructions, threat rows. Never on a
+ * price: counting a price up from a smaller number implies a move that did not
+ * happen, and the odometer above exists precisely so prices do not do this.
+ */
+function CountUp({ to, suffix = "" }: { to: number; suffix?: string }) {
+  const [n, setN] = useState(0);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setN(to);
+      return;
+    }
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
+      io.disconnect();
+      const t0 = performance.now();
+      const tick = (t: number) => {
+        const p = Math.min(1, (t - t0) / 620);
+        // ease-out cubic, so it decelerates onto the real value
+        setN(Math.round(to * (1 - Math.pow(1 - p, 3))));
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+    const io = new IntersectionObserver(
+      ([e]) => e.isIntersecting && run(),
+      { threshold: 0.2 }
+    );
+    io.observe(el);
+    /* The floor. Without it a figure that never scrolls into view reads 0 —
+       and a full-height capture never scrolls, so every tile on this section
+       rendered as zero. A count that has not run must show its real value, not
+       a wrong one. */
+    const floor = setTimeout(() => {
+      if (!done) {
+        done = true;
+        io.disconnect();
+        setN(to);
+      }
+    }, 2500);
+    return () => {
+      clearTimeout(floor);
+      io.disconnect();
+    };
+  }, [to]);
+  return (
+    <span ref={ref} className="tnum">
+      {n}
+      {suffix}
+    </span>
+  );
+}
+
+/* ----------------------------------------------------------------- stack */
+
+const STACK = [
+  {
+    name: "Solana",
+    role: "Where the money lives",
+    line: "The vault is a program-derived account. Deposits, limits and every enforcement rule are on chain, because that is the only place they cannot be quietly changed.",
+    tone: "var(--color-cyan)",
+  },
+  {
+    name: "Arcium",
+    role: "Where the rules stay unread",
+    line: "Your three prices are secret-shared across an MPC cluster and evaluated without any single node holding them whole. The result comes back signed by the whole cluster.",
+    tone: "var(--color-magenta)",
+  },
+  {
+    name: "Pyth",
+    role: "What it decides against",
+    line: "An on-chain price account the program validates for staleness and confidence before it can influence anything. Not the chart — the chart is a display feed.",
+    tone: "var(--color-amber)",
+  },
+  {
+    name: "Jupiter",
+    role: "How the trade happens",
+    line: "A pinned program id, called through a CPI with a slippage floor derived from the oracle, and three balance assertions after the swap returns.",
+    tone: "var(--color-lime)",
+  },
+];
+
+/* -------------------------------------------------------------- evidence */
+
+/* Every figure here is counted from the repository, not asserted. The grade
+   split is the literal row count of the table in SECURITY.md. */
+const GRADE_SPLIT = [
+  { label: "Enforced", n: 12, tone: "var(--color-up)" },
+  { label: "Coded", n: 14, tone: "var(--color-amber)" },
+  { label: "Design", n: 5, tone: "var(--color-cyan)" },
+  { label: "Unverified", n: 5, tone: "var(--color-down)" },
+  { label: "Inherent", n: 4, tone: "var(--color-text-3)" },
+];
+
 /* ------------------------------------------------------------ grade rack */
 
 const GRADES = [
@@ -506,6 +610,35 @@ export function Landing() {
   const oracle = useOraclePrice();
   const stage = useRef<HTMLDivElement>(null);
   const spark = useCandles("5S", 5, 240);
+
+  /* Reveal on scroll, with a floor.
+     `.reveal` starts at opacity 0, so anything that could leave the observer
+     un-run would leave the page blank. Three guards: the `js` class is set
+     immediately (so the CSS fallback only applies when scripts really did not
+     run), every observed element is revealed on intersect, and a timeout
+     reveals everything unconditionally in case the observer never fires. */
+  useEffect(() => {
+    document.documentElement.classList.add("js");
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>(".reveal"));
+    const show = (el: HTMLElement) => el.classList.add("is-in");
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            show(e.target as HTMLElement);
+            io.unobserve(e.target);
+          }
+        }
+      },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.01 }
+    );
+    nodes.forEach((n) => io.observe(n));
+    const floor = setTimeout(() => nodes.forEach(show), 2500);
+    return () => {
+      clearTimeout(floor);
+      io.disconnect();
+    };
+  }, []);
 
   /* One rAF-throttled pointermove writes two registered custom properties. No
      React state, so the tilt never triggers a render. */
@@ -663,7 +796,7 @@ export function Landing() {
       <Marquee />
 
       {/* ------------------------------------------------------------ play */}
-      <section id="play" className="defer mx-auto max-w-[1240px] scroll-mt-16 px-4 py-24 sm:px-7">
+      <section id="play" className="defer mx-auto max-w-[1240px] scroll-mt-16 px-4 py-16 sm:px-7">
         <div className="reveal">
           <h2 className="text-[length:var(--text-sec)] font-extrabold tracking-[-0.03em]">
             Drag the numbers. Watch it fire.
@@ -679,7 +812,7 @@ export function Landing() {
       </section>
 
       {/* --------------------------------------------- public vs hidden */}
-      <section className="defer mx-auto max-w-[1240px] px-4 py-24 sm:px-7">
+      <section className="defer mx-auto max-w-[1240px] px-4 py-16 sm:px-7">
         <h2 className="reveal text-[length:var(--text-sec)] font-extrabold tracking-[-0.03em]">
           The trade is public. The rule is not.
         </h2>
@@ -717,13 +850,17 @@ export function Landing() {
             <ul className="mt-5 space-y-3">
               {["buy under", "sell over", "stop below"].map((t) => (
                 <li key={t}>
-                  <span className="hid">
+                  <span className="hid w-full justify-center py-2.5 text-[13px]">
                     <LockGlyph />
                     {t}
                   </span>
                 </li>
               ))}
             </ul>
+            <p className="mt-4 text-[14px] leading-snug text-[var(--color-text-2)]">
+              Three numbers. They are encrypted in your browser, and the cluster
+              evaluates them without any single node holding one whole.
+            </p>
             <span className="ast">
               SIZE IS PUBLIC ON PURPOSE — ONE TRADE RECOVERS IT EXACTLY → T-38
             </span>
@@ -746,12 +883,107 @@ export function Landing() {
         </div>
       </section>
 
+      {/* ----------------------------------------------------------- stack
+          What a judge needs after "what is it": what it is made of, and which
+          part does what. Four cards, one line each, no architecture diagram to
+          decode. */}
+      <section className="defer mx-auto max-w-[1240px] px-4 py-16 sm:px-7">
+        <h2 className="reveal text-[length:var(--text-sec)] font-extrabold tracking-[-0.03em]">
+          Four pieces, one job each.
+        </h2>
+        <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {STACK.map((x) => (
+            <div key={x.name} className="reveal slab p-6">
+              <div
+                className="mono text-[11px] font-bold uppercase tracking-[0.14em]"
+                style={{ color: x.tone }}
+              >
+                {x.role}
+              </div>
+              <h3 className="mt-3 text-[length:var(--text-card)] font-bold">{x.name}</h3>
+              <p className="mt-2 text-[14px] leading-snug text-[var(--color-text-2)]">
+                {x.line}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* -------------------------------------------------------- evidence
+          Counted from the repository, not asserted. The grade split is the
+          literal row count of the table in SECURITY.md, including the five
+          rows graded UNVERIFIED — a bar that showed only the good grades would
+          be the one chart on this page that lies. */}
+      <section className="defer border-y-[3px] border-[var(--color-stroke)] px-4 py-16 sm:px-7">
+        <div className="mx-auto max-w-[1240px]">
+          <h2 className="reveal text-[length:var(--text-sec)] font-extrabold tracking-[-0.03em]">
+            What is actually built.
+          </h2>
+          <p className="reveal mono mt-3 text-[11px] uppercase tracking-[0.14em] text-[var(--color-text-3)]">
+            Counted from the repository, not asserted
+          </p>
+
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              { n: 126, label: "tests passing", sub: "110 TypeScript · 16 Rust" },
+              { n: 19, label: "program instructions", sub: "every one exercised by a suite" },
+              { n: 40, label: "threats graded", sub: "five grades, split below" },
+              { n: 408, label: "pairs charted", sub: "one tradable by the vault" },
+            ].map((x) => (
+              <div key={x.label} className="reveal slab slab-hi p-6">
+                <div className="text-[length:var(--text-figure)] font-bold leading-none text-[var(--color-lime)]">
+                  <CountUp to={x.n} />
+                </div>
+                <div className="mono mt-3 text-[11px] font-bold uppercase tracking-[0.14em]">
+                  {x.label}
+                </div>
+                <div className="mt-1.5 text-[13px] text-[var(--color-text-3)]">{x.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* The grade split, as a bar. Every segment is a real row count. */}
+          <div className="reveal mt-8">
+            <div className="flex h-6 w-full overflow-hidden rounded-full border-[3px] border-[var(--color-stroke)]">
+              {GRADE_SPLIT.map((g) => (
+                <div
+                  key={g.label}
+                  style={{ width: `${(g.n / 40) * 100}%`, background: g.tone }}
+                  title={`${g.label}: ${g.n} of 40`}
+                />
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+              {GRADE_SPLIT.map((g) => (
+                <span
+                  key={g.label}
+                  className="mono flex items-center gap-2 text-[11px] uppercase tracking-[0.14em]"
+                >
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-sm"
+                    style={{ background: g.tone }}
+                    aria-hidden
+                  />
+                  <span style={{ color: g.tone }}>{g.label}</span>
+                  <span className="tnum text-[var(--color-text-3)]">{g.n}</span>
+                </span>
+              ))}
+            </div>
+            <span className="ast">
+              ENFORCED MEANS A TEST FAILS IF THE CHECK IS DELETED. THE FIVE
+              UNVERIFIED ROWS ARE SHOWN BECAUSE HIDING THEM WOULD MAKE THE OTHER
+              THIRTY-FIVE WORTHLESS.
+            </span>
+          </div>
+        </div>
+      </section>
+
       {/* --------------------------------------------------- the grade rack
           The register goes cold for exactly one screen. No glow, no candy
           fill, flat mono badges, void ground. Playfulness is being spent to
           buy the caveats their impact, not to crowd them out. */}
       <section
-        className="defer border-y-[3px] border-[var(--color-stroke)] bg-[var(--color-void)] px-4 py-24 sm:px-7"
+        className="defer border-y-[3px] border-[var(--color-stroke)] bg-[var(--color-void)] px-4 py-16 sm:px-7"
         style={{ perspective: "1400px" }}
       >
         <div className="mx-auto max-w-[1240px]">
@@ -789,7 +1021,7 @@ export function Landing() {
       </section>
 
       {/* ------------------------------------------------------ checkable */}
-      <section className="defer mx-auto max-w-[1240px] px-4 py-24 sm:px-7">
+      <section className="defer mx-auto max-w-[1240px] px-4 py-16 sm:px-7">
         <h2 className="reveal text-[length:var(--text-sec)] font-extrabold tracking-[-0.03em]">
           All of it is checkable.
         </h2>
