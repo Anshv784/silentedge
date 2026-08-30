@@ -25,11 +25,18 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  // Solana RPC, Jupiter quotes, and wallet bridges. Nothing else.
-  // Solana RPC, Jupiter quotes, Pyth's public price history, and wallet
+  // Solana RPC, Jupiter quotes, Pyth's two public price services, and wallet
   // bridges. Nothing else — an injected script cannot post a draft strategy to
-  // a host that is not on this list.
-  "connect-src 'self' https://*.helius-rpc.com https://*.solana.com https://api.jup.ag https://*.jup.ag https://benchmarks.pyth.network wss://*.helius-rpc.com wss://*.solana.com",
+  // a host that is not on this list, so hosts are added one exact name at a
+  // time rather than by widening this to a wildcard.
+  //
+  //   (candles are same-origin now — see app/api/candles/route.ts. Pyth
+  //    retired the browser-callable shim on 26 Aug 2026, so the relay is
+  //    server-side and no candle host belongs in this list.)
+  //   hermes.pyth.network      batched prices for the tape and market list
+  //
+  // Both are display data. Neither can reach a signing path.
+  "connect-src 'self' https://*.helius-rpc.com https://*.solana.com https://api.jup.ag https://*.jup.ag https://hermes.pyth.network wss://*.helius-rpc.com wss://*.solana.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'none'",
