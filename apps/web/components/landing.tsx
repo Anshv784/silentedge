@@ -568,6 +568,99 @@ const GRADE_SPLIT = [
   { label: "Inherent", n: 4, tone: "var(--color-text-3)" },
 ];
 
+
+/* ---------------------------------------------------------------- ledger */
+
+/**
+ * One filled trade, as the chain records it.
+ *
+ * This replaced two side-by-side bullet lists — one thin column of text against
+ * one column of heavy pills, which read as unbalanced and explained the idea
+ * only if you already understood it. Showing a single object with some fields
+ * legible and three of them locked makes the split obvious without a sentence.
+ *
+ * The price is the live one. The amounts are illustrative and the header says
+ * so — inventing a specific transaction and presenting it as real would be the
+ * one thing this page cannot do.
+ *
+ * The three private rows never render digits. They carry the redaction, which
+ * is the same treatment the app uses, because the moment a hidden value is
+ * printed anywhere the colour grammar stops meaning anything.
+ */
+function Ledger({ spot }: { spot: number | null }) {
+  const px = spot ?? 105;
+  const rows: {
+    k: string;
+    v: string;
+    hidden?: boolean;
+    note?: string;
+  }[] = [
+    { k: "program", v: "J7mfFVqo…tHrgfNEJ" },
+    { k: "instruction", v: "execute_trade" },
+    { k: "side", v: "BUY" },
+    { k: "amount in", v: "418.02 USDC" },
+    { k: "price at fill", v: `$${px.toFixed(2)}` },
+    { k: "vault after", v: "1,204.55 USDC · 8.21 SOL" },
+    {
+      k: "size cap",
+      v: "10.00%",
+      note: "PUBLIC ON PURPOSE — ONE TRADE RECOVERS IT EXACTLY → T-38",
+    },
+    { k: "buy under", v: "", hidden: true },
+    { k: "sell over", v: "", hidden: true },
+    { k: "stop below", v: "", hidden: true },
+  ];
+
+  return (
+    <div>
+      {rows.map((r, i) => {
+        const first = r.hidden && !rows[i - 1]?.hidden;
+        return (
+          <div key={r.k}>
+            {first ? (
+              <div className="flex items-center gap-3 border-y-[3px] border-[var(--color-stroke)] bg-[var(--color-void)] px-6 py-3">
+                <LockGlyph />
+                <span className="mono text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--color-magenta)]">
+                  Never reaches the chain · evaluated inside the computation
+                </span>
+              </div>
+            ) : null}
+            <div
+              className="flex flex-wrap items-center gap-x-5 gap-y-1 px-6 py-3"
+              style={{
+                borderLeft: `4px solid ${
+                  r.hidden ? "var(--color-magenta)" : "var(--color-cyan)"
+                }`,
+                background: i % 2 ? "color-mix(in srgb, var(--color-void) 45%, transparent)" : undefined,
+              }}
+            >
+              <span className="mono w-[128px] shrink-0 text-[12px] uppercase tracking-[0.1em] text-[var(--color-text-3)]">
+                {r.k}
+              </span>
+              {r.hidden ? (
+                <span
+                  className="redacted h-[18px] w-[150px]"
+                  aria-label="encrypted — not readable"
+                />
+              ) : (
+                <span className="pub text-[15px]">{r.v}</span>
+              )}
+              {r.note ? <span className="ast !mt-0 !border-l-0 !pl-0">{r.note}</span> : null}
+            </div>
+          </div>
+        );
+      })}
+      <div className="border-t-[3px] border-[var(--color-stroke)] px-6 py-4">
+        <p className="text-[14px] leading-snug text-[var(--color-text-2)]">
+          Seven fields anyone can read. Three they cannot — encrypted in your
+          browser, and evaluated by a cluster where no single node holds one
+          whole.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------ grade rack */
 
 const GRADES = [
@@ -820,54 +913,19 @@ export function Landing() {
           The trade is public. The rule is not.
         </h2>
 
-        <div className="mt-10 grid gap-5 md:grid-cols-2">
-          <div className="reveal slab p-7">
-            <div className="mono flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-[var(--color-cyan)]">
-              <span
-                className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-cyan)]"
-                aria-hidden
-              />
-              Public · on Solana
-            </div>
-            <ul className="mt-5 space-y-2.5">
-              {[
-                "that a trade happened",
-                "how big it was",
-                "the price at the time",
-                "both vault balances",
-                "your size cap",
-                "that a ciphertext exists",
-              ].map((t) => (
-                <li key={t} className="pub text-[15px]">
-                  {t}
-                </li>
-              ))}
-            </ul>
+        <p className="reveal mt-3 max-w-[64ch] text-[var(--color-text-2)]">
+          This is one filled trade, as the chain records it.
+        </p>
+
+        <div className="reveal slab mt-8 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b-[3px] border-[var(--color-stroke)] px-6 py-4">
+            <span className="mono text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--color-text-3)]">
+              execute_trade · one fill
+            </span>
+            <span className="chip chip-amber">Shape of every fill · example amounts</span>
           </div>
 
-          <div className="reveal slab p-7">
-            <div className="mono flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-[var(--color-magenta)]">
-              <LockGlyph />
-              Never leaves the computation
-            </div>
-            <ul className="mt-5 space-y-3">
-              {["buy under", "sell over", "stop below"].map((t) => (
-                <li key={t}>
-                  <span className="hid w-full justify-center py-2.5 text-[13px]">
-                    <LockGlyph />
-                    {t}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-4 text-[14px] leading-snug text-[var(--color-text-2)]">
-              Three numbers. They are encrypted in your browser, and the cluster
-              evaluates them without any single node holding one whole.
-            </p>
-            <span className="ast">
-              SIZE IS PUBLIC ON PURPOSE — ONE TRADE RECOVERS IT EXACTLY → T-38
-            </span>
-          </div>
+          <Ledger spot={oracle?.price ?? null} />
         </div>
 
         <p className="reveal mono mt-7 text-[13px] uppercase tracking-[0.1em] text-[var(--color-amber)]">
