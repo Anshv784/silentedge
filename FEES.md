@@ -16,7 +16,7 @@ instruction set, and the same property that makes the custody claim true:
 A protocol fee would add a third path. That is worth stating plainly because it
 is the reason one has not been added quietly: any fee mechanism is, structurally,
 a way for someone other than the owner to move money out of the vault, and every
-security claim in [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) would need re-reading
+security claim in [`SECURITY.md`](SECURITY.md) would need re-reading
 against it.
 
 ## What does cost money, and who pays it
@@ -67,11 +67,16 @@ no fee.
 **A performance fee to a followed strategy's author.** The natural fee for
 copy-trading, and currently not computable: it requires a cost basis, and the
 vault deliberately keeps none (see `daily_loss_limit_bps` in
-[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) T-31 for why estimating one was
+[`SECURITY.md`](SECURITY.md) T-31 for why estimating one was
 rejected). Building it means building cost-basis accounting first, and doing
 that properly means pricing deposits and withdrawals — which puts the oracle on
 the withdraw path, which is the one thing that must keep working when everything
 else is down.
+
+Both designs are blocked on the same input the code cannot supply — a treasury
+address, which only whoever owns this project can decide — and because a fee is
+structurally a third way for value to leave a vault, alongside the swap and the
+vault owner's withdrawal, that decision was left open rather than taken quietly.
 
 Until one of those is deliberately chosen, implemented, and audited, the honest
 answer is the one at the top: no protocol fee, and the operator absorbs the

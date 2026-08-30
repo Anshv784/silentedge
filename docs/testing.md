@@ -159,7 +159,7 @@ test fixture holding a private key, and it has no place in the app bundle.
 
 ## Coverage
 
-Mapped to THREAT_MODEL.md §9. 58 tests, plus one that skips without a cluster.
+Mapped to SECURITY.md §9. 58 tests, plus one that skips without a cluster.
 
 | Area | Covered |
 |------|---------|
@@ -177,9 +177,9 @@ Mapped to THREAT_MODEL.md §9. 58 tests, plus one that skips without a cluster.
 | Encryption | round trip, derived-key recovery, nonce freshness, no plaintext in ciphertext, wrong-key failure |
 | Strategy on chain | storage, version bump, zero-key rejection, stranger rejected, **no plaintext in transaction, account, or logs** |
 
-| Arcium | `x + 10` end to end on the devnet cluster — **passes**; skips only when no cluster is reachable. See [arcium-hello-world.md](arcium-hello-world.md) |
-| Strategy state | `Enc<Mxe, Strategy>` stored then read back by a later computation — **passes** on devnet. See [persistent-strategy-state.md](persistent-strategy-state.md) |
-| Strategy engine | BUY / HOLD / SELL / stop against the **live Pyth price**, fake-oracle rejection, no threshold on chain — **passes** on devnet. See [oracle.md](oracle.md) and [what-is-private.md](what-is-private.md) |
+| Arcium | `x + 10` end to end on the devnet cluster — **passes**; skips only when no cluster is reachable. See [arcium.md](arcium.md) |
+| Strategy state | `Enc<Mxe, Strategy>` stored then read back by a later computation — **passes** on devnet. See [arcium.md](arcium.md) |
+| Strategy engine | BUY / HOLD / SELL / stop against the **live Pyth price**, fake-oracle rejection, no threshold on chain — **passes** on devnet. See [oracle.md](oracle.md) and [privacy.md](privacy.md) |
 | Oracle scaling | Pyth exponent handling in both directions, absurd exponents, u64 overflow — Rust unit tests |
 
 Not yet covered, because the code does not exist: trade authorization, cluster
@@ -199,7 +199,7 @@ npx ts-mocha -p ./tsconfig.json -t 1200000 'tests/hello-arcium.ts'
 
 Use an RPC with a real rate limit. The circuit upload is ~70 chunked
 transactions and public endpoints throttle it into a corrupt partial upload —
-which is exactly the failure documented in arcium-hello-world.md.
+which is exactly the failure documented in arcium.md.
 
 ## Callback account lists must mirror the callback struct
 

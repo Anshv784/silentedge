@@ -1,113 +1,93 @@
 # SilentEdge
 
-Non-custodial Solana trading vaults with confidential strategy execution.
+Non-custodial Solana trading vaults where your strategy thresholds are evaluated inside
+Arcium's MPC network, so the platform operator never sees them.
 
-Create a rule-based trading bot. Your funds stay in a vault only you can withdraw from.
-Your strategy parameters are evaluated inside multi-party computation, so they are not
-visible to the platform operator or to any single node running the computation.
+## Status — read this first
 
-> **Status: working on devnet, not audited, not on mainnet.**
+> **Working on devnet. Not audited. Not on mainnet. Do not use with real funds.**
 >
-> The whole loop runs. A fresh wallet can create a vault, deposit, build a
-> strategy, have it encrypted in the browser and re-encrypted to the Arcium
-> cluster, have that cluster evaluate it against the live Pyth SOL/USD feed,
-> receive a BLS-attested authorization on chain, and withdraw everything
-> afterwards — verified end to end in `tests/e2e-devnet.ts` against the live
-> devnet cluster.
->
-> The swap that spends an authorization is verified separately, on a surfpool
-> **mainnet fork** with a live Jupiter route, because devnet has no routable
-> liquidity. A permissionless executor (`apps/api`) drives the loop and has
-> been observed doing both halves.
->
-> What that does **not** mean: no third party has audited any of this, the
-> program's upgrade authority is still a single hot key
-> ([`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) T-3), and nothing is deployed to
-> mainnet. Do not use with real funds.
->
-> What is enforced, what is merely coded, and what is claimed and absent is
-> graded threat by threat in [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
+> The program's **upgrade authority is a single hot key** — a plain system-owned keypair, not
+> a multisig. Every custody statement below describes the **bytecode running today**, not a
+> promise about tomorrow's: whoever holds that key can replace `withdraw`. Moving it to a
+> multisig is the one blocker on mainnet. `scripts/check-upgrade-authority.mjs` refuses a
+> deploy while the authority is a plain keypair, and **exits 1 today**.
 
----
+| What | Grade | Evidence |
+|------|-------|----------|
+| Browser-encrypted strategy → MPC evaluation on live Pyth SOL/USD → BLS-attested callback → withdraw | Verified end to end against the **live devnet cluster** | `tests/e2e-devnet.ts` |
+| The swap that spends an authorization (devnet has no routable liquidity) | Verified on a **surfpool mainnet fork** with a live Jupiter route | `tests/swap-execution.ts` |
+| Cluster pinning (T-37), the most custody-critical check in the program | **CODED, not ENFORCED** — the derivation has Rust unit tests, the call site has no runtime detector. A previous test claimed to catch its removal; a mutation run proved it did not. | `SECURITY.md` |
+| Program upgrade authority (T-3) | **UNVERIFIED** | `SECURITY.md` |
+
+The last full pass found eight real issues: seven fixed, one not — T-37 above. Two of the
+fixed ones would have cost a user money: a cooldown that disabled the stop-loss, and a
+strategy replacement that left the old strategy trading. Both now have detectors confirmed by
+deleting the fix and watching the test fail. Enforced, merely coded, and claimed-but-absent
+are graded threat by threat in [`SECURITY.md`](SECURITY.md).
 
 ## What it does
 
-1. Connect a Solana wallet and create a vault (a PDA your program controls, not ours).
-2. Build a strategy visually — e.g. *buy SOL below $150, sell above $180, stop at $120*.
-3. The strategy is **encrypted in your browser** and stored as confidential state.
-4. Arcium's MPC network evaluates it against a Pyth price and outputs only `BUY`/`SELL`/`HOLD`.
-5. That result is threshold-attested, verified on-chain, and executed via Jupiter.
-6. You withdraw whenever you want. No one else can.
+1. Connect a Solana wallet and create a vault — a PDA controlled by the program, not by us.
+2. Build a strategy visually, e.g. *buy SOL below $150, sell above $180, stop at $120*.
+3. The strategy is **encrypted in your browser** before it leaves it, and stored on-chain as
+   confidential state.
+4. Arcium's MPC network evaluates it against a Pyth price and outputs only `BUY`, `SELL` or
+   `HOLD`. Inputs are secret-shared across nodes; under its dishonest-majority model your
+   parameters stay private as long as at least one node is honest.
+5. The result returns in a callback carrying a **BLS threshold signature from the whole
+   cluster**, verified on-chain in our program. The operator cannot forge one; a compromised
+   backend can only refuse to schedule work — a liveness failure, never a safety one. Valid
+   results execute via Jupiter.
+6. You withdraw to your own wallet whenever you want. Funds leave a vault by exactly two
+   paths: a swap between allowlisted mints where both sides stay inside the same vault, or a
+   withdrawal signed by the owner. **No instruction in the deployed program accepts an
+   operator authority** — a property of the instruction set, not a runtime check.
 
-## Why each piece
+## What this project does *not* claim
 
-**Why Solana** — the vault, its limits, and every enforcement rule are a Solana program.
-Enforcement lives on-chain because that is the only place it cannot be quietly changed.
+- **The program can still be changed.** No instruction lets the operator withdraw your funds,
+  but until the upgrade authority is a timelocked multisig, the operator can replace the
+  instructions.
+- **Your strategy does not stay hidden forever.** Every executed trade is public, and an
+  observer correlating prices against your trades narrows your thresholds over time. That is
+  inherent to acting on a public chain; no cryptography fixes it.
+- **We hold the Arcium MXE authority.** Using it would halt every bot visibly on-chain and
+  cannot forge a trade, but it *would* let us decrypt previously stored strategies. There is
+  currently no way to burn or timelock it.
+- **Trade intent is briefly public before execution.** Front-running is possible.
+- **Not for HFT.** MPC evaluation takes seconds. Suited to threshold strategies over hours and
+  days; unsuited to arbitrage, scalping, or stop-losses that must fill at a price.
 
-**Why Arcium** — a strategy that sits in a database is a strategy your operator can read,
-copy, or front-run. Arcium evaluates it under MPC: inputs are secret-shared across nodes, and
-under its dishonest-majority model your parameters stay private as long as **at least one node
-is honest**, even if every other node colludes.
+## Running it locally
 
-**Why the vault is non-custodial** — funds leave a vault by exactly two paths: a swap between
-two allowlisted mints where both sides stay inside the same vault, or a withdrawal to the
-owner's wallet signed by the owner. There is no third path, and **no instruction accepts an
-operator key**. That is a property of the instruction set, not a runtime check.
+**Fast path — the web app against the already-deployed devnet program.** Copy `.env.example`
+to `.env` and fill it in, then:
 
-**How trades are authorized** — not by a platform key. Arcium returns results in a callback
-carrying a **BLS threshold signature** from the whole cluster, verified on-chain inside our
-program. The operator cannot forge one. A fully compromised backend still cannot move funds —
-its worst case is refusing to schedule work, which is a liveness failure, never a safety one.
-
-## What we do *not* claim
-
-Being precise here matters more than sounding impressive.
-
-- **Not "unruggable."** The operator cannot withdraw your funds. Until the program upgrade
-  authority is a timelocked multisig, the operator *can* change the program.
-- **Not "your strategy is invisible."** Every executed trade is public. An observer correlating
-  prices with your trades can narrow your thresholds over time. This is inherent to acting
-  on a public chain and no amount of cryptography fixes it.
-- **Not "private from us, unconditionally."** We hold the Arcium MXE authority. Using it would
-  halt every bot visibly on-chain and cannot forge trades, but *would* let us decrypt
-  previously stored strategies. There is currently no way to burn or timelock that authority.
-- **Not front-running resistant.** Trade intent is briefly public before execution.
-- **Not for HFT.** MPC evaluation takes seconds. Suitable for threshold strategies over hours
-  and days; unsuitable for arbitrage, scalping, or guaranteed-execution stop-losses.
-
-Full detail: [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY.md`](SECURITY.md).
-
-## Architecture at a glance
-
-```
-      Browser                      Solana                       Arcium
-─────────────────────      ──────────────────────      ────────────────────────
- strategy authored
-        │
-  encrypted client-side
-        │
-        └──────────────►  StrategyState
-                          Enc<Mxe, Strategy>
-                                │
-        scheduler ──►  evaluate_strategy ──────────►  MPC evaluation
-                       (Pyth price, pinned cluster)    (both branches always run)
-                                                              │
-                          TradeIntent  ◄────────────  BLS-attested callback
-                                │                     verify_output()
-                                │
-        anyone ──►  execute_trade
-                    (limits, allowlists, oracle band)
-                                │
-                                ▼
-                          Jupiter CPI ──► DEX
+```bash
+pnpm install
+pnpm --filter @silentedge/web dev        # http://localhost:3000
 ```
 
-Funds and enforcement on Solana. Strategy and evaluation in Arcium. Routing via Jupiter.
+**Full path — build, deploy and test.**
 
-**MagicBlock is deliberately not used.** Delegated accounts are locked on the base layer, and
-both the Arcium callback and the swap are base-layer writes to exactly those accounts —
-so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
-[`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md).
+```bash
+pnpm surfpool                            # terminal 1: surfpool, forked from devnet
+anchor build                             # terminal 2
+anchor deploy --provider.cluster http://127.0.0.1:8899
+pnpm test:local                          # vault + authorization, against the fork
+pnpm test:devnet                         # end-to-end, against the live devnet cluster
+pnpm test:fork                           # swap execution, mainnet fork + live Jupiter
+```
+
+Forking devnet means the real wSOL and USDC mints exist, so the production allowlist is
+genuinely exercised ([`docs/testing.md`](docs/testing.md)).
+
+**Devnet SOL.** A deploy needs roughly **5.3 SOL of headroom** for the temporary buffer,
+refunded afterwards. `solana airdrop` is rate-limited to the point of being unavailable, so
+top the deploy wallet up at https://faucet.solana.com or from another devnet wallet first.
+
+Never put a funded keypair path in `.env`. The backend holds no key that can move funds.
 
 ## Repository layout
 
@@ -115,65 +95,33 @@ so an Ephemeral Rollup cannot sit on the critical path. Reasoning:
 |------|----------|
 | `programs/vault/` | Anchor program — custody, limits, intents, swap CPI |
 | `encrypted-ixs/` | Arcis circuits (Arcium workspace convention) |
-| `programs/hello_arcium/` | Disposable proof that the Arcium pipeline works |
-| `apps/web/` | Next.js — wallet, balances, strategy builder, client-side encryption |
+| `programs/hello_arcium/` | Disposable proof the Arcium pipeline works; its strategy circuits are retired |
+| `apps/web/` | Next.js — dashboard, strategy studio, client-side encryption |
 | `apps/api/` | Untrusted service — scheduling, indexing, RPC relay |
-| `packages/sdk/` | Strategy encryption (Arcium RescueCipher + x25519) |
-| `packages/types/` | Strategy model, validation, normalization |
-| `packages/config/` | Mints, allowlists, cluster offsets |
-| `tests/` | Suite run against a Surfpool devnet fork |
+| `packages/` | `sdk` strategy encryption (RescueCipher + x25519), `types` model and validation, `config` mints and allowlists |
+| `tests/` | Local-fork, live-devnet and mainnet-fork suites |
+| `scripts/` | Upgrade-authority check, circuit registration, fork seeding |
+
+Verified toolchain: Rust 1.97.1, Solana CLI 3.1.11 (Agave), Anchor 1.1.2, Arcium 0.14.1,
+Surfpool 1.5.0, Node 24.7.0, pnpm 11.21.0.
 
 ## Documentation
 
-| Document | Purpose |
-|----------|---------|
-| [`RESEARCH.md`](RESEARCH.md) | Verified findings from official docs, with sources |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The design, data/money/strategy flows, V1 and V2 scope |
-| [`THREAT_MODEL.md`](THREAT_MODEL.md) | Adversaries, 37 threats, test obligations |
-| [`SECURITY.md`](SECURITY.md) | Security assumptions and disclosure policy |
-| [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md) | Why MagicBlock is excluded |
-| [`docs/testing.md`](docs/testing.md) | Test environment, coverage, and a false-pass trap |
-| [`docs/arcium-hello-world.md`](docs/arcium-hello-world.md) | The smallest real Arcium computation, and what it cost |
-| [`docs/persistent-strategy-state.md`](docs/persistent-strategy-state.md) | `Enc<Mxe, Strategy>` surviving between computations |
-| [`docs/what-is-private.md`](docs/what-is-private.md) | What the engine hides, and what leaks anyway |
-| [`docs/oracle.md`](docs/oracle.md) | Why Pyth triggers and Jupiter quotes |
+| Document | What it is |
+|----------|------------|
+| [`SECURITY.md`](SECURITY.md) | Every threat graded ENFORCED / CODED / UNVERIFIED, plus disclosure policy. **Read this before trusting any claim above.** |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The design, and the data, money and strategy flows |
+| [`docs/privacy.md`](docs/privacy.md) | What the engine hides, and what leaks anyway |
+| [`docs/arcium.md`](docs/arcium.md) | How the MPC pipeline and persistent encrypted state work |
+| [`docs/testing.md`](docs/testing.md) | Test environments, coverage, and a false-pass trap |
+| [`docs/research.md`](docs/research.md) | Verified findings from official docs, with sources |
 
-Start with `RESEARCH.md` — `ARCHITECTURE.md` assumes its findings.
-
-## Toolchain
-
-Verified working versions:
-
-| Tool | Version |
-|------|---------|
-| Rust | 1.97.1 |
-| Solana CLI | 3.1.11 (Agave) |
-| Anchor | 1.1.2 |
-| Arcium | 0.14.1 |
-| Surfpool | 1.5.0 |
-| Node | 24.7.0 |
-| pnpm | 11.21.0 |
-
-## Running locally
-
-```bash
-cp .env.example .env          # then fill in
-pnpm install
-
-surfpool start --network devnet --no-deploy    # terminal 1
-
-anchor build                                   # terminal 2
-anchor deploy --provider.cluster http://127.0.0.1:8899
-ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/id.json \
-  npx ts-mocha -p ./tsconfig.json -t 120000 'tests/**/*.ts'
-```
-
-Tests run against Surfpool forked from devnet so the real wSOL and USDC mints
-exist and the production allowlist is genuinely exercised. See
-[`docs/testing.md`](docs/testing.md).
-
-Never put a funded keypair path in `.env`. The backend holds no key that can move funds.
+Also: [`FEES.md`](FEES.md) (no protocol fee — a fee would be a third way for value to leave a
+vault), [`docs/oracle.md`](docs/oracle.md) (why Pyth triggers and Jupiter quotes), and
+[`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md) (why an Ephemeral Rollup
+cannot sit on this critical path).
 
 ## License
 
-Not yet chosen.
+[Apache-2.0](LICENSE). Permissive, with an explicit patent grant — the licence
+Solana and Anchor themselves use.

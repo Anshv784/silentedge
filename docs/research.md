@@ -1,4 +1,12 @@
-# RESEARCH.md
+# docs/research.md
+
+**What this file is.** The primary-source research log behind SilentEdge's
+architecture: what the Arcium, MagicBlock, Jupiter, Pyth and Surfpool
+documentation actually says, what it does not say, and which of the original
+design assumptions it invalidated. It is a reference document, not an entry
+point — start at the repository README, and come here for the evidence behind
+a specific design decision. Where the documentation is silent, this file says
+so instead of filling the gap.
 
 Research conducted 2026-08-15 against current official documentation. Every claim
 below is sourced. Where documentation is silent, this document says so explicitly
@@ -258,7 +266,7 @@ decrypt **historical on-chain strategy ciphertexts**. This is inherent — anyth
 compute on, the MXE key can decrypt, and on-chain ciphertext is permanent. Cluster pinning stops
 the bot and stops forgery; it cannot retroactively protect ciphertext already published.
 
-See THREAT_MODEL.md T-7 and T-37.
+See SECURITY.md T-7 and T-37.
 
 ### 2.7 Hard constraints on circuits (Arcis)
 
@@ -316,7 +324,7 @@ positioned accordingly.
 
 > **Superseded by a deeper evaluation.** This section established only that a *Jupiter swap*
 > cannot run in an ER. The follow-up question — whether an ER can accelerate the accounts *we*
-> control — is answered in full in [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md).
+> control — is answered in full in [`docs/magicblock-evaluation.md`](./magicblock-evaluation.md).
 > Short version: delegated accounts are **locked on L1**, and both the Arcium BLS callback and
 > the swap are L1 writes to exactly the accounts we would want to delegate. There is no
 > critical-path integration point.
@@ -363,7 +371,7 @@ bytes), same CU limits.
 
 **Do not integrate MagicBlock in V1 or V2.** Full analysis of all seven candidate integration
 points, the eATA/Magic Actions steelman, and the benchmark design is in
-[`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md). Summary:
+[`docs/magicblock-evaluation.md`](./magicblock-evaluation.md). Summary:
 
 1. **Structural** — no critical-path account can be delegated (§3.2).
 2. **Custody** — every fund-touching variant makes withdrawal depend on ER validator liveness.
@@ -550,7 +558,7 @@ dummy signature always fails verification." The BLS path is only exercisable via
 | Swap inside a MagicBlock ER | **Not possible** | Non-delegated pool accounts are read-only |
 | Hiding *that* a trade happened | **Not possible** | Public DEX, public chain |
 | Hiding trade side/size/time | **Not possible** | Required by the executing swap |
-| Hiding strategy thresholds | **Possible, with caveats** | Statistically inferable from repeated trades — see THREAT_MODEL T-9 |
+| Hiding strategy thresholds | **Possible, with caveats** | Statistically inferable from repeated trades — see SECURITY.md T-9 |
 | Arbitrary user code execution | **Not currently viable** | Fixed-shape circuits; needs a bounded DSL |
 | Strategy confidentiality *against the operator* | **Conditional** | Only if MXE authority is removed from operator control — §2.6 |
 

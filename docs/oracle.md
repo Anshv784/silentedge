@@ -128,5 +128,5 @@ first-class suspect when a client-side call fails for reasons that make no sense
 
 ## Related
 
-- [`RESEARCH.md`](../RESEARCH.md) §5 — Pyth research and the trigger/quote split
-- [`THREAT_MODEL.md`](../THREAT_MODEL.md) — T-24 stale price, T-25 wide confidence, T-26 DEX manipulation
+- [`research.md`](research.md) §5 — Pyth research and the trigger/quote split
+- [`SECURITY.md`](../SECURITY.md) — T-24 stale price, T-25 wide confidence, T-26 DEX manipulation

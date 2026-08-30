@@ -1,559 +1,370 @@
-# ARCHITECTURE.md
+# ARCHITECTURE
 
-Derived from RESEARCH.md. Read that first — this document assumes findings F1–F3.
+What SilentEdge is, verified against `programs/vault/src/`,
+`encrypted-ixs/src/lib.rs`, `apps/` and `packages/`.
 
-**Status: BUILT, and this document has drifted from what was built.**
-
-This was the design document, written before implementation, and it is kept as
-the record of what was intended and why. Where the code diverged, the code is
-right and a note marks the spot. Three divergences are worth knowing before you
-read on, because each was a design idea that did not survive contact:
-
-- **`size_bps` is public, not encrypted.** Every trade reveals its own size on
-  chain, so encrypting the parameter that sets it protected nothing while
-  costing a circuit input. It moved to `VaultConfig`. (T-38.)
-- **There is no post-swap deviation band.** §6 describes one; it was not built.
-  The oracle-derived `min_amount_out`, checked after the swap against the
-  actual delta, is the whole slippage bound.
-- **Account count is bounded by `onlyDirectRoutes`, not `maxAccounts`.**
-
-For what the deployed program actually does, read
-[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) — it is graded against the code and
-kept current. This file is history.
+**Status: running on devnet. Not audited. Not on mainnet.** Program id
+`J7mfFVqo7L8jKHiVREeBti6cVrDLyHGQcUT3tHrgfNEJ`. The upgrade authority is a
+**single hot key** today — T-3, graded **UNVERIFIED** in
+[`SECURITY.md`](SECURITY.md). Every custody statement below is about
+the *deployed* code and is conditional on that key.
 
 ---
 
-## 1. The core decision
-
-The brief proposed:
+## 1. The whole system
 
 ```
-Private strategy → Arcium MPC → BUY/SELL → MXESigningKey threshold signing → Solana vault
+ BROWSER                  SOLANA                     ARCIUM MXE
+ strategy builder
+ entry_below/exit_above/stop_below
+   │ x25519 + RescueCipher  ciphertext only
+   └── encrypt ──────────► submit_strategy ────────► store_strategy_v2
+       plaintext never      Enc<Shared,Strategy>         │ re-encrypt
+       leaves the page            ▲                      ▼
+                                  └── BLS callback ── Enc<Mxe,Strategy>
+ ANYONE                       │                      cluster-only,
+ scheduler ──────────► evaluate_strategy             nobody online
+ (executor, keeper,     Pyth SOL/USD read on chain
+  or the user)          both vault ATAs read on chain
+                        queue_computation ────────► evaluate_strategy_v3
+                                ┌──────────────────  secret thresholds meet
+                                ▼ (action,amount_in) public price; both
+                   evaluate_strategy_v3_callback     branches always run
+                     cluster pin + verify_output()  ← the trust boundary
+                                ▼  (BLS threshold signature)
+                          TradeIntent               HOLD writes nothing
+                          side, amount_in, expiry,
+                          vault_nonce, strategy_version
+ ANYONE                         │
+ executor submits ─────► execute_trade ── 13 on-chain checks ──┐
+ (holds no privilege)     fresh Pyth read → min_out            │
+                          CPI Jupiter, invoke_signed(vault PDA)│
+                          4 post-swap balance assertions ◄─────┘
+                                ▼
+                   both legs land in the vault's own ATAs
 ```
-
-`MXESigningKey` cannot fill that role (RESEARCH F1: `ArcisEd25519` is SHA3-512-based and
-therefore not a valid Solana signature scheme). The brief anticipated this and asked for a
-"weaker fallback" — a Squads multisig with a restricted authorization path.
-
-**We do not need the weaker fallback.** Arcium already provides on-chain, cluster-attested
-threshold authorization through the BLS-signed callback (`verify_output()`). The correct
-design uses it directly:
-
-```
-Private strategy  →  Arcium MPC  →  BLS-attested callback  →  on-chain TradeIntent
-                                                                     │
-                                          program-enforced rules ────┤
-                                                                     ▼
-                                              permissionless executor submits swap
-                                                                     ▼
-                                            Vault PDA CPIs Jupiter (invoke_signed)
-```
-
-This is **stronger** than the original proposal, and worth being precise about why. A
-signing key that can sign arbitrary transactions is a bearer credential: whoever induces a
-signature controls the funds, and the vault's safety rests on the circuit author never
-making a mistake about what gets signed. Our design inverts that. The MPC layer produces
-only a *claim* ("the strategy says BUY, size 100 USDC"), and the Solana program independently
-enforces every rule about what may be done with that claim. Compromising the MPC layer
-completely still does not let an attacker withdraw funds — the withdrawal instruction
-does not accept an MPC-derived authority at all.
-
-**Custody rule, stated once and enforced everywhere:**
-
-> Funds leave a vault by exactly two paths: (a) a swap between two allowlisted mints,
-> where both sides stay inside the same vault; (b) a withdrawal to the vault owner's
-> wallet, signed by the owner. There is no third path, and no instruction accepts an
-> operator key.
 
 ---
 
-## 2. Component responsibilities
+## 2. Why each piece
 
-| Layer | Owns | Explicitly does NOT own |
-|-------|------|------------------------|
-| **Solana program (`vault`)** | Custody, limits, allowlists, intent lifecycle, swap CPI, all enforcement | Strategy contents |
-| **Arcium MXE (Arcis circuits)** | Encrypted strategy state, private evaluation, action decision | Funds, signing authority over funds |
-| **Jupiter (Router `/build`)** | Route discovery, swap execution | Trigger prices, authorization |
-| **Pyth** | Trigger price + on-chain sanity band | Execution pricing |
-| **Frontend (Next.js/TS)** | Strategy authoring, client-side encryption, wallet signing | Plaintext strategy custody after encryption |
-| **Backend (`api`)** | Scheduling, RPC relay, indexing, UX data | Keys, plaintext strategies, authority of any kind |
-| **Executor** | Submitting swap transactions | Choosing what to trade |
+| Piece | Why |
+|---|---|
+| **Solana** | Enforcement must live where it cannot be quietly changed: limits, allowlists, intent lifecycle and the swap CPI are all in the program. The backend holds no key that can move funds; its worst case is refusing to schedule work — liveness, never safety. |
+| **Arcium** | Strategy parameters evaluated under MPC, secret-shared across Arx nodes. Cerberus is dishonest-majority: they stay confidential as long as **one node is honest**, even if every other node colludes. |
+| **The BLS callback** | The authorization channel. The brief wanted `MXESigningKey` to sign Solana transactions; it cannot — `ArcisEd25519` is SHA3-512, not RFC-8032 (research F1). The callback is better anyway: MPC produces a *claim*, the program enforces every rule about it, and compromising the MPC layer entirely still yields no withdrawal path. |
+| **Pyth** | Trigger and on-chain floor. A DEX spot price as trigger would let an attacker push a pool to fire someone's stop and take the other side. `evaluate_strategy` takes no price argument — it reads the feed on chain. |
+| **Jupiter Router `/build`** | Funds sit in a PDA-owned ATA, so the swap must be a CPI under `invoke_signed`; the Meta-Aggregator path returns a transaction we cannot compose into. CPI forfeits lookup tables, so `onlyDirectRoutes` bounds the account list. |
+| **MagicBlock — not used** | Delegated accounts are locked on L1, and both mandatory L1 writes (the callback writing `TradeIntent`, and `execute_trade`) target exactly the accounts we would delegate. Delegation and Arcium-attested authorization are mutually exclusive over the same accounts. [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md) |
 
-The backend is **untrusted by design**. It holds no key that can move funds, cannot read a
-plaintext strategy, and cannot fabricate a trade. Its worst-case compromise is censorship
-(refusing to schedule evaluations) — a liveness failure, never a safety failure.
+Sourced findings behind these choices: [`docs/research.md`](docs/research.md).
 
 ---
 
-## 3. Account model
+## 3. Money flow
 
 ```
-VaultConfig  PDA  seeds = ["vault", owner]
-  owner: Pubkey                 // only withdrawal destination, ever
-  strategy_state: Pubkey        // -> StrategyState
-  base_mint / quote_mint        // allowlisted pair, immutable after init
-  base_ata / quote_ata          // PDA-owned token accounts
-  limits: RiskLimits
-  status: Active | Paused | Stopped
-  nonce: u64                    // monotonic; replay protection
-  last_trade_ts: i64            // cooldown; 0 until the first trade
-  bump: u8
-
-StrategyState  PDA  seeds = ["strategy", vault]
-  ciphertexts: [[u8; 32]; N]    // Enc<Mxe, Strategy>
-  nonce: u128                   // Arcium encryption nonce
-  version: u32                  // bumped on update; binds intents
-  lifecycle: Draft|Active|Paused|Stopped
-
-TradeIntent  PDA  seeds = ["intent", vault]     // singleton per vault
-  side: Buy | Sell
-  amount_in: u64
-  min_amount_out: u64
-  expires_at_slot: u64
-  vault_nonce: u64              // must equal VaultConfig.nonce
-  strategy_version: u32
-  consumed: bool
-
-RiskLimits
-  max_trade_bps            // e.g. 1000 = 10% of vault per trade
-  max_slippage_bps         // e.g. 50 = 0.5%
-  daily_loss_limit_bps     // STORED, NOT ENFORCED — see state.rs
-  cooldown_seconds         // entries only; exits are never throttled
-  max_oracle_staleness_sec // ceiling == what oracle.rs enforces (30s)
-  max_conf_bps             // ceiling == what oracle.rs enforces (100bps)
-  max_oracle_deviation_bps // STORED, NOT ENFORCED — min_out does this job
+owner wallet ──deposit──► vault quote ATA ──execute_trade──► vault base ATA
+      ▲                    (PDA-owned)      both legs stay    (wSOL)
+      └──── withdraw ──────────────────────  in-vault ───────────┘
+            owner signs; destination derived from vault_config.owner
 ```
 
-`TradeIntent` is a singleton per vault. A new intent overwrites any unconsumed one. This
-makes queue-stuffing impossible and keeps replay reasoning simple.
+> Funds leave a vault by exactly two paths: a swap between the two allowlisted
+> mints where both sides stay inside the same vault, or a withdrawal to
+> `VaultConfig.owner` signed by the owner. There is no third path, and **no
+> instruction in the deployed program accepts an operator authority** — subject
+> to T-3, since the upgrade authority can replace the deployed code.
+
+`withdraw`'s destination is derived from `vault_config.owner`, never a parameter;
+it ignores `status` and touches no Arcium account, so it works even if the MPC
+network, the backend and the executor are all down. `pause`/`resume`/`stop` are
+owner-only: a `GUARDIAN` constant used to exist and resolved to the program's own
+id — the deploy keypair's public key — handing the deployer power to pause any
+user's vault. Removed, not repointed.
 
 ---
 
-## 4. Money flow
+## 4. Strategy flow
 
 ```
-User wallet ──deposit(USDC)──► Vault quote_ata (PDA-owned)
-                                     │
-                                     │ swap, both legs stay in-vault
-                                     ▼
-                              Vault base_ata (SOL)
-                                     │
-User wallet ◄──withdraw()───────────┘
-   ▲
-   └── signed by owner ONLY. No operator instruction exists.
+1 author    apps/web — entry_below, exit_above, stop_below (size_bps is public)
+2 encrypt   packages/sdk/src/encrypt.ts — x25519 ECDH to the MXE key,
+            RescueCipher, fresh nonce. Plaintext never leaves the page.
+3 submit    submit_strategy(...)      [owner-signed] → Enc<Shared, Strategy>
+4 convert   convert_strategy(offset)  [owner-signed] → store_strategy_v2
+                                      → callback writes Enc<Mxe, Strategy>
+5 evaluate  evaluate_strategy(offset) [permissionless] → evaluate_strategy_v3
+                                      → callback writes TradeIntent, or nothing
 ```
 
-Enforced invariants:
-- `withdraw` requires `owner` as signer and sends **only** to `owner`. The destination is
-  not a parameter.
-- `execute_trade` may move tokens only between `base_ata` and `quote_ata` of the *same*
-  vault, both PDA-owned. Post-swap balance assertions confirm this.
-- No instruction transfers to any operator-controlled address. This is a property of the
-  instruction set, not of a runtime check.
-- `pause` is **owner-only**. A `GUARDIAN` constant existed and resolved to the program's
-  own id, which is the deploy keypair's public key — so it handed the deployer the power to
-  pause any user's vault. Removed rather than repointed; see constants.rs. `withdraw`
-  remains available while paused — pausing must never trap user funds.
-
----
-
-## 5. Strategy flow
-
-```
-Strategy Builder (browser)
-   │  { entry_below, exit_above, stop_below }   (size_bps is public)
-   ▼
-Normalize → fixed-size struct, i64 fixed-point
-   ▼
-Client-side encrypt  (x25519 ECDH + RescueCipher, @arcium-hq/client)
-   │  plaintext never leaves the browser
-   ▼
-submit_strategy(ciphertexts, nonce)   ── user-signed Solana tx
-   ▼
-StrategyState { Enc<Mxe, Strategy> }
-```
-
-The backend receives ciphertext only. Phase 6 must prove this by inspection of network
-requests, server logs, database rows, and transaction data.
-
-**Lifecycle:** `Draft → Active → Paused → Stopped`, plus updates. A strategy update is a
-new encryption submitted by the owner; it bumps `strategy_version`, which invalidates any
-in-flight `TradeIntent`. The operator has no instruction that can modify `StrategyState` —
-mutation requires the owner's signature.
-
----
-
-## 6. Arcium flow
-
-```
-Scheduler (permissionless — backend, keeper, or the user)
-   │
-   ▼
-evaluate_strategy(vault)                     [Solana tx]
-   │  reads Pyth → price, conf, publish_time
-   │  rejects stale / wide-confidence / paused
-   │  queue_computation(args) ──CPI──► Arcium program
-   ▼
-Arcium cluster (Cerberus MPC, dishonest-majority)
-   │  inputs: Enc<Mxe, Strategy>  +  public price
-   │  both branches always execute — no timing side channel
-   ▼
-callback ──► our program's evaluate_callback
-   │  output.verify_output(cluster_account, computation_account)   ← BLS threshold sig
-   ▼
-write TradeIntent  (or write nothing, if HOLD)
-```
-
-Circuit, in shape (exact syntax per current Arcis at implementation time):
+**Why two steps.** `Enc<Shared, _>` is readable by the submitter. `Enc<Mxe, _>`
+is readable only by the cluster acting together, which is what lets evaluation
+run with **nobody online** — not the operator, not the owner's browser.
+Replacing a strategy zeroes the converted copy and `mxe_version`, so the old one
+stops being evaluable at once and trading halts until the owner converts the
+replacement. Fail closed. `copy_strategy` follows a *listed* vault by copying
+`Enc<Mxe, Strategy>` bytes — safe because that ciphertext is encrypted to the
+cluster, not to a person, and the follower keeps their own limits and `size_bps`.
 
 ```rust
-#[instruction]
-pub fn evaluate(
-    strategy_ctxt: Enc<Mxe, Strategy>,   // persistent, MXE-only
-    price: u64,                          // public, from Pyth
-    vault_value: u64,                    // public
-) -> (u8, u64) {                         // (action, amount_in) — revealed
-    let s = strategy_ctxt.to_arcis();
-
-    // Branchless: every comparison is always evaluated.
-    let buy  = price < s.entry_below;
-    let sell = (price > s.exit_above) | (price < s.stop_below);
-
-    let action = if sell { 2u8 } else if buy { 1u8 } else { 0u8 };
-    let amount = (vault_value * size_bps) / 10_000;  // size_bps public, passed in
-    let amount = if action == 0 { 0 } else { amount };
-
-    (action.reveal(), amount.reveal())
-}
+pub fn evaluate_strategy_v3(
+    strategy_ctxt: Enc<Mxe, Strategy>,  // secret: entry_below, exit_above, stop_below
+    price: u64,                         // public — Pyth, read on chain
+    quote_value: u64, base_value: u64,  // public — the vault's own ATAs
+    size_bps: u64,                      // public — VaultConfig
+) -> (u8, u64)                          // (action, amount_in) — revealed
 ```
 
-Two deliberate properties:
-
-1. **Only the action is revealed.** Thresholds stay inside `Enc<Mxe, Strategy>` and are
-   never output.
-2. **No data-dependent control flow.** Arcis executes both branches regardless
-   (RESEARCH §2.7), so execution time cannot leak which condition fired. We rely on this
-   rather than fighting it.
-
-**Liveness.** Cerberus is detect-and-abort: any single faulty node can abort. HOLD and
-"aborted" are therefore indistinguishable to an outside observer, and both are normal.
-The system must **fail closed** — no intent written means no trade. It must never infer a
-default action from a missing result.
+- **Only the action escapes** — nothing about which threshold was crossed or how
+  far past it the price is.
+- **No data-dependent control flow.** Arcis executes both branches of every
+  conditional regardless, so timing cannot leak which condition fired. A rule
+  switched off is a sentinel that can never match (`0` buy, `u64::MAX` sell), so
+  "off" is indistinguishable from "on".
+- **A stop exits the whole position**; anything else trades `size_bps` of the
+  balance actually being debited. Selling wins over buying: a price below the
+  stop is also below the entry.
+- **Liveness.** Cerberus is detect-and-abort — any single node can abort, so
+  liveness is not assured. HOLD and "aborted" look identical from outside and
+  both are normal. No intent means no trade; nothing infers a default action from
+  a missing result.
 
 ---
 
-## 7. Authorization and signing flow
+## 5. Enforcement points on chain
 
-This replaces the brief's `MXESigningKey` flow.
+`execute_trade` is callable by **anyone**, safely: every parameter is fixed in
+`TradeIntent`, and every rule is checked against on-chain state rather than
+anything the caller supplies. The executor chooses only whether and when, inside
+the window — liveness, not trust. Users can self-execute from the web app.
 
-```
-                    Arcium cluster
-                          │
-            BLS threshold signature over output
-                          │
-                          ▼
-        our program: output.verify_output(...)      ← the trust boundary
-                          │
-                  ┌───────┴────────┐
-              Ok(result)        Err(_)
-                  │                │
-                  ▼                ▼
-          write TradeIntent    abort, no state change
-                  │
-                  ▼
-   ┌──────────────────────────────────────────┐
-   │  execute_trade  — callable by ANYONE     │
-   │  ── verifies against on-chain state ──   │
-   │  1. vault Active, not paused             │
-   │  2. intent.consumed == false             │
-   │  3. intent.vault_nonce == vault.nonce    │
-   │  4. intent.strategy_version current      │
-   │  5. current_slot <= expires_at_slot      │
-   │  6. entry: amount_in <= max_trade_bps    │
-   │  7. entry: cooldown elapsed              │
-   │     (exits skip 6 and 7 — a full-position│
-   │      stop must never be capped or delayed│
-   │  8. amount_in <= source ATA balance      │
-   │  9. Pyth fresh + confidence within band  │
-   │ 10. swap program ∈ allowlist {Jupiter}   │
-   │ 11. mints ∈ allowlist {USDC, SOL}        │
-   │ 12. destination ATA == vault's own ATA   │
-   └──────────────────┬───────────────────────┘
-                      ▼
-      CPI Jupiter route, invoke_signed(vault PDA seeds)
-                      ▼
-      post-swap assertions: actual_out >= min_amount_out   [built]
-                           balances landed in vault ATAs   [built]
-                           realised price within Pyth       [NOT BUILT]
-                             deviation band
-                      ▼
-      intent.consumed = true;  vault.nonce += 1;  emit TradeExecuted
-```
+| # | Check | Error |
+|---|---|---|
+| 1 | vault `status == Active` | `VaultNotActive` |
+| 2 | `!consumed`, `amount_in > 0` | `IntentAlreadyConsumed` / `NoTradeAuthorized` |
+| 3 | `intent.vault_nonce == vault.nonce` | `IntentStale` |
+| 4 | `intent.strategy_version == strategy.mxe_version` | `IntentStrategyMismatch` |
+| 5 | `slot <= expires_at_slot` (TTL 180 slots, ~72 s) | `IntentExpired` |
+| 6 | source ATA holds `amount_in` | `InsufficientSourceBalance` |
+| 7 | `amount_in >= min_trade_bps` of source balance, if set | `TradeTooSmall` |
+| 8 | *entries only:* `amount_in <= max_trade_bps` of source balance | `TradeTooLarge` |
+| 9 | *entries only:* cooldown elapsed | `CooldownActive` |
+| 10 | fresh Pyth: ≤30 s old, conf ≤100 bps, price within \$1–\$10,000 | `ConfidenceTooWide`, … |
+| 11 | `min_out` derived on chain from that price + the vault's slippage limit, `> 0` | `TradeTooSmall` |
+| 12 | *entries only:* exposure ceiling `max_base_exposure_bps`, if set | `ExposureLimitReached` |
+| 13 | swap program is the pinned Jupiter id (address constraint) | `SwapProgramNotAllowed` |
 
-Why the executor is permissionless: it holds no privilege. Every parameter of the trade is
-already fixed in `TradeIntent` and every rule is checked on-chain. The executor chooses
-only *whether* and *when* (within the expiry window) to submit. That is a liveness role, not
-a trust role — the user can always run their own. If the operator's executor vanishes,
-users are not stuck: they can self-execute or withdraw.
+Then the CPI, then — after reloading both ATAs — exactly `amount_in` left the
+source (`UnexpectedSourceDelta`), the destination did not fall
+(`DestinationDrained`), it gained at least `min_out` (`SlippageExceeded`), and
+the vault's lamports are unchanged (`VaultLamportsChanged`).
 
-**Replay protection** is layered deliberately: `consumed` flag, `vault_nonce` equality,
-`strategy_version` binding, and slot expiry. Any one would mostly work; together they fail
-safe if one is buggy.
+**Exits skip 8 and 9 on purpose.** `max_trade_bps` can never exceed 50% and a
+stop exits the whole position, so applying the cap to sells rejected *every*
+stop-loss. Same for the cooldown: `execute_trade` is permissionless, so gating
+sells would let anyone burn the window on a benign trade and lock out a
+de-risking exit. A sell is already bounded by `min_out`.
 
-### 7.1 Cluster pinning — mandatory
+**`min_out` is derived on chain** because a caller-supplied floor is the whole
+vulnerability: an executor naming its own could route the vault's funds through a
+pool it controls, fill at a ruinous price, keep the difference, and the swap
+still "succeeds". The floor takes the end of the Pyth confidence interval that
+yields the *larger* value, so oracle uncertainty cannot be spent as slippage.
 
-Arcium's generated constraint derives the cluster account from the MXE account:
+**State backing these checks.** Three PDAs — `VaultConfig` (`["vault", owner]`),
+`StrategyState` (`["strategy", vault]`, both ciphertext sets and their versions),
+and `TradeIntent` (`["intent", vault]`), a **singleton per vault** so a new
+decision overwrites any unconsumed one. Token accounts are ATAs derived from
+`vault_config`, never stored as fields, so they cannot be pointed elsewhere.
+`is_armed()` requires **both** a non-zero `mxe_version` and non-zero ciphertext —
+`convert_strategy` claims the version at queue time, before the ciphertext
+exists, so the version alone would let an evaluation run against 96 zero bytes.
+
+**Three gaps, stated rather than buried.**
+
+- **`daily_loss_limit_bps` is stored and not enforced.** Nothing reads it.
+  Realised P&L needs a cost basis, and tokens enter and leave outside trading, so
+  assigning basis would put the oracle on the `withdraw` path — which must keep
+  working when Pyth, Arcium and the operator are all unavailable. It stays
+  because removing it changes the account layout. Do not describe it as
+  protection.
+- There is **no realised-price deviation band** after the swap. `min_out`,
+  checked against the actual balance delta, is the whole slippage bound.
+- `max_oracle_deviation_bps` *is* read by `execute_trade` — an entry filling more
+  than that band above the price the decision was made at is refused — but the
+  check is guarded on `intent.oracle_price > 0`, and
+  `evaluate_strategy_v3_callback` writes `0` there. On the live callback path the
+  band does not engage; the tests that exercise it seed an intent directly on a
+  mainnet fork. Do not count it as a control until the callback records the
+  decision price.
+
+---
+
+## 6. The trust boundary: cluster pinning
+
+Arcium's generated constraint derives the cluster account from the MXE account,
+so it silently follows a `migrate-cluster`, and `verify_output()` validates the
+BLS signature against **whatever cluster account is passed**. Left as generated,
+an operator who migrated the MXE to a cluster they control could mint
+attestations this program accepts as genuine MPC results — forging trade
+authorizations. Both callbacks therefore assert first:
 
 ```rust
-#[account(address = derive_cluster_pda!(mxe_account))]   // follows migration silently
-pub cluster_account: Box<Account<'info, Cluster>>,
+require!(ctx.accounts.cluster_account.key() == expected_cluster(),
+         VaultError::UnexpectedCluster);
 ```
 
-`verify_output()` validates the BLS signature **against whatever cluster account is passed**.
-Left as generated, an operator who migrates the MXE to a cluster they control could mint BLS
-attestations our program would accept as genuine MPC results — forging trade authorizations.
-
-**We therefore pin the cluster to a per-network constant** in both `evaluate_strategy` and
-`evaluate_callback`:
-
-```rust
-#[account(
-    address = derive_cluster_pda!(mxe_account),
-    constraint = cluster_account.key() == EXPECTED_CLUSTER @ VaultError::UnexpectedCluster,
-)]
-pub cluster_account: Box<Account<'info, Cluster>>,
-```
-
-`EXPECTED_CLUSTER` is the cluster PDA for offset `456` (devnet) / `2026` (mainnet), compiled in.
-Changing it requires a program upgrade — which, once the upgrade authority is a timelocked
-multisig (§9), is itself public and delayed.
-
-This single constraint does three jobs:
-
-1. **Closes the forgery path.** Only the pinned cluster's aggregate BLS key can authorize a trade.
-2. **Makes migration loud.** Post-migration, `evaluate_strategy` and `evaluate_callback` both
-   fail. The bot halts visibly instead of continuing under an operator-controlled cluster.
-3. **Preserves withdrawals.** `withdraw` touches none of these accounts, so users are unaffected.
-
-It does **not** protect strategy ciphertext already published on-chain — see §9 assumption 4.
+`expected_cluster()` derives the PDA from `EXPECTED_CLUSTER_OFFSET` — `456` on
+devnet, `2026` under `--features mainnet` — so changing it needs a program
+upgrade. This closes the forgery path, turns a migration into a loud halt rather
+than a silent continuation, and leaves `withdraw` untouched. It does **not**
+protect ciphertext already on chain (§8.4). And `SECURITY.md` grades the
+pin **CODED, not ENFORCED**: the derivation is unit-tested, the call site is not,
+so no test fails if the `require!` is deleted.
 
 ---
 
-## 8. What is public vs private
+## 7. Public, private, and neither
 
-### Public (on-chain, unavoidable)
-- Vault existence, owner address, token balances
-- Every trade: side, amount in, amount out, timestamp, route
-- Every evaluation: that one occurred, and the Pyth price used
-- `TradeIntent` contents during the window between callback and execution
-- Strategy *ciphertext* and the fact a strategy exists
-- Computation queue/finalization events and fees paid
+| | |
+|---|---|
+| **Public, unavoidable** | vault existence, owner, balances, limits; every trade's side, amount in, amount out, timestamp, route; that an evaluation occurred and the price it used; `TradeIntent` in the window between callback and execution; strategy *ciphertext*; queue/finalization events and fees |
+| **Private under 1-of-n honest** | `entry_below`, `exit_above`, `stop_below`; which condition triggered an action; the strategy of a vault that has never traded |
+| **Cannot be private** | that the user runs a bot at all; any executed trade, on any public chain; thresholds, given enough trades |
 
-### Private (under Arcium's 1-of-n honest assumption)
-- `entry_below`, `exit_above`, `stop_below` — **not** `size_bps`, which is
-  public in `VaultConfig`: every trade reveals its own size on chain, so
-  encrypting the parameter behind it bought nothing. See T-38.
-- Which specific condition triggered a given action
-- The strategy of a user whose vault has never traded
+**`size_bps` is public, and encrypting it protected nothing.** The traded amount
+and the vault balance are both public in the same transaction, so
+`size_bps = amount × 10_000 / balance` recovers it exactly from one trade. It was
+the fourth field of the encrypted struct; it is now a `VaultConfig` setting (T-38).
 
-### Cannot be made private — state this plainly in the product
-- That the user runs a bot at all
-- Any executed trade, on any public DEX
-- **Thresholds, given enough trades.** An observer who records the Pyth price at every
-  evaluation and sees which ones produced a BUY can bound `entry_below` from both sides.
-  Enough observations narrow it arbitrarily. This is inherent to acting on-chain, not an
-  Arcium weakness, and no amount of MPC fixes it. See THREAT_MODEL T-9 for partial
-  candidate V2 mitigations (jittered cadence, randomised size, threshold bands),
-  none of which are implemented, and their limits.
+**Thresholds leak statistically.** An observer who records the price at every
+evaluation and sees which ones produced a BUY can bound `entry_below` from both
+sides, and enough observations narrow it arbitrarily. Inherent to acting on
+chain, not an Arcium weakness. SECURITY.md T-9 lists candidate mitigations
+(jittered cadence, randomised size, threshold bands); **none are implemented.**
 
 ---
 
-## 9. Exact Arcium security assumptions
+## 8. Assumptions and authorities
 
-These are the assumptions the product's privacy claims rest on. If any fails, strategy
-confidentiality fails.
+If any of these fails, strategy confidentiality fails.
 
-1. **At least one Arx node in our cluster is honest.** Cerberus is dishonest-majority for
-   privacy: n−1 colluding nodes learn nothing. If *all* collude, strategies are exposed.
-2. **No liveness guarantee.** Detect-and-abort: one faulty node can abort any computation.
-   Trading must fail closed and tolerate frequent no-results.
-3. **BLS aggregate integrity.** Forging a callback requires forging the cluster's aggregate
-   BLS signature. Our program trusts `verify_output()` and never the callback transaction's
-   Solana signer.
-4. **MXE authority is trusted for *historical* strategy confidentiality — and this cannot be
-   fixed today.** The MXE authority can `migrate-cluster` to a cluster it controls (fully
-   internal clusters are a documented, supported feature) and reconstruct MXE key material,
-   then decrypt strategy ciphertexts already published on-chain. There is **no CLI command to
-   transfer, burn, or timelock the MXE authority**, and Recovery Peers have **no documented
-   veto**. Cluster pinning (§7.1) makes migration halt the system and blocks forged
-   authorizations, but cannot un-publish ciphertext. **Any "private from the operator" claim
-   must be qualified accordingly.**
-5. **Recovery peers are trusted.** ≥4 nodes hold encrypted shares of the MXE key. Their stake
-   is role-bound on-chain, but they cannot refuse a migration.
-6. **Program upgrade authority is trusted** until timelocked — standard Solana. See §9.1.
+1. **At least one Arx node is honest.** n−1 colluding nodes learn nothing; all n
+   colluding exposes strategies.
+2. **Liveness is not assured.** Detect-and-abort; trading fails closed.
+3. **BLS aggregate integrity.** The program trusts `verify_output()`, never the
+   callback transaction's Solana signer — an ordinary node keypair carrying no
+   security property.
+4. **The MXE authority is trusted for *historical* confidentiality, and this
+   cannot be fixed today.** It can `migrate-cluster` to a cluster it controls
+   (fully internal clusters are a documented, supported feature), reconstruct MXE
+   key material, and decrypt strategy ciphertexts already published on chain.
+   There is no CLI command to transfer, burn or timelock the MXE authority, and
+   Recovery Peers have no documented veto — they hold encrypted shares of the key
+   and cannot refuse a migration. Cluster pinning halts the system and blocks
+   forgery; it cannot un-publish ciphertext.
+5. **The program upgrade authority is trusted.**
 
-### 9.1 Authority configuration (production)
+| Authority | Today (devnet) | Before mainnet |
+|---|---|---|
+| Vault program upgrade | **Single hot key — T-3, UNVERIFIED** | Squads multisig + timelock |
+| MXE authority | Deployer keypair | Multisig *if Arcium supports it* — no `set-authority` exists in the CLI surface, so this is unverified |
+| Guardian (pause) | **Removed** — the constant was the deploy keypair | Re-add only as a multisig demonstrably not the deployer |
 
-| Authority | V1 (devnet) | Production (mainnet gate) |
-|-----------|-------------|---------------------------|
-| Vault program upgrade | Deployer keypair | **Squads multisig + timelock** |
-| MXE authority | Deployer keypair | Squads multisig **if Arcium supports it** — unverified, see Q-A |
-| Guardian (pause only) | **Removed** — the constant was the deploy keypair | Re-add only as a multisig that is demonstrably not the deployer |
+A fresh MXE init requires the program's upgrade authority to sign, and an
+immutable program can never initialize a fresh MXE. So: deploy → init MXE →
+*then* transfer upgrade authority, and never make the program immutable. A
+timelocked multisig makes upgrades public and delayed rather than impossible.
 
-Sequencing matters: fresh MXE init **requires the program's upgrade authority to sign**, and an
-immutable program "can never initialize a fresh MXE." So the order is: deploy → init MXE →
-*then* transfer upgrade authority to the multisig.
-
-**Do not make the program immutable.** It would forfeit both bug fixes and any future MXE
-re-initialization. A timelocked multisig is the correct end state — it makes upgrades public and
-delayed rather than impossible.
-
-**Honest claim wording:**
-
-> Non-custodial vault architecture: the platform operator holds no key that can withdraw,
-> redirect, or arbitrarily trade user funds. Strategy parameters are evaluated under
-> multi-party computation and remain confidential as long as at least one node in the
-> cluster is honest. Executed trades are public, and a determined observer can narrow your
-> thresholds by watching them over time. Separately, the operator holds the Arcium MXE
-> authority; exercising it would halt all bots visibly on-chain, but would also let the
-> operator decrypt previously stored strategies. We disclose this rather than claim
-> protection we do not have.
-
-**Claims we will not make:** "unruggable", "completely invisible", "impossible to front-run".
+> **The claim, worded honestly.** No instruction in the deployed program accepts
+> an operator authority — as long as the deployed code is the code you read,
+> which today rests on a single upgrade key (T-3). Strategy parameters stay
+> confidential as long as at least one node in the cluster is honest. Executed
+> trades are public, and a determined observer can narrow your thresholds by
+> watching them. The operator holds the MXE authority; exercising it would halt
+> all bots visibly on chain, and would also let the operator decrypt previously
+> stored strategies. We disclose this rather than claim protection we do not have.
 
 ---
 
-## 10. MagicBlock
-
-**Excluded from V1 and V2.** Evaluated twice, including a dedicated pass on whether it can
-accelerate the accounts *we* control. Full analysis: [`docs/magicblock-evaluation.md`](docs/magicblock-evaluation.md).
-
-The blocking fact is not that a Jupiter swap cannot run in an ER — it is that **delegated
-accounts are locked on L1**. Both mandatory L1 writes in this design target the accounts we
-would want to delegate:
-
-- the Arcium **BLS callback** writes `TradeIntent` — an L1 transaction, so a delegated
-  `TradeIntent` would make the callback fail;
-- `execute_trade` writes `consumed`, `vault.nonce` and `last_trade_ts` while CPI-ing
-  Jupiter.
-
-**Delegation and Arcium-attested authorization are mutually exclusive over the same accounts.**
-Every account on the critical path must therefore stay undelegated, which leaves no ER-resident
-state on that path and no latency for the ER to remove. The only safely delegatable accounts
-(analytics, trade history) are off the trade path by construction, so their benefit there is
-zero.
-
-Independently disqualifying: any variant touching funds or gating makes user withdrawal depend
-on ER validator liveness — undelegation is initiated on the ER and finalised "through validator
-CPI", with no documented user-initiated force-undelegation. That alone fails the core
-non-custodial requirement.
-
-Revisit if the product adds an internal matching engine (where our own order state becomes the
-hot path — the case MagicBlock's stack is genuinely built for), or if Arcium benchmarks come
-back sub-second, making the ~400 ms L1 legs the dominant term.
-
----
-
-## 11. Latency budget
+## 9. Latency
 
 | Stage | Expected | Source |
-|-------|----------|--------|
+|---|---|---|
 | Pyth read + queue tx | ~0.4–1 s | Solana slot time |
-| Arcium MPC + callback | **unknown — must benchmark** | Not published; 72 s queue TTL, 120 s client default |
-| Executor picks up intent | ~0.4–2 s | our scheduling |
+| Arcium MPC + callback | **unknown — must benchmark** | not published; 72 s queue TTL, 120 s client default |
+| Executor picks up the intent | ~0.4–2 s | our scheduling |
 | Jupiter swap confirm | ~0.4–2 s | Solana |
 
-Total is dominated by an unmeasured MPC term. **Benchmark before any latency claim.** Position
-the product as automated rule execution, not high-frequency trading.
-
-### 11.1 Is seconds-to-tens-of-seconds acceptable? — Yes, for this strategy class
-
-The V1 strategy language is `PRICE < X → BUY` / `PRICE > Y → SELL` with a stop. These are
-**threshold** strategies over horizons of hours to days. They are not latency-competitive:
-nobody else is racing to hit *your* private threshold, because nobody else knows it. The
-economically relevant question is whether the price is still near the trigger when execution
-lands — and for the moves these strategies target, a few seconds is immaterial.
-
-Three honest caveats, all of which resolve in the safe direction:
-
-1. **Fast markets:** in a sharp move, price can travel past the trigger before execution.
-   `min_amount_out` — derived from the oracle price at execution and checked
-   against the actual balance delta — means the trade then **fails rather than
-   fills badly**. (The deviation band this originally also cited was never
-   built; `min_amount_out` carries the guarantee alone.) Users must understand the bot may simply not fire during a flash crash — that is
-   correct behaviour, not a defect.
-2. **Stop-losses are the weakest fit.** A stop is the one rule where latency genuinely costs
-   money. Document that these are *not* guaranteed-execution stops.
-3. **Not suitable for:** arbitrage, momentum scalping, liquidation hunting, or anything where
-   being first matters. Say so in the product copy.
-
-**Conclusion: latency is acceptable and not a blocker.** It constrains which strategies the
-product should advertise, which V1 scope already reflects.
+Dominated by an unmeasured MPC term. **Benchmark before making any latency
+claim.** This is rule execution, not high-frequency trading, which suits the
+strategy class: nobody else is racing to hit *your* private threshold. In a sharp
+move the price can travel past the trigger before execution lands, and `min_out`
+then makes the trade **fail rather than fill badly** — the bot may simply not
+fire during a flash crash, which is correct behaviour, not a defect. Stops are
+the weakest fit; treat them as rules that may not execute. Unsuitable for
+arbitrage, scalping, or anything where being first matters.
 
 ---
 
-## 12. Repository structure
+## 10. Repository structure
 
-Adjusted from the brief's suggestion: no separate `arcium/` tree, because `arcium build`
-expects circuits inside the Anchor workspace layout.
+Circuits live inside the Anchor workspace because `arcium build` expects them
+there. Every test is a flat `.ts` file in `tests/` — there are no `tests/unit`,
+`tests/surfpool` or `tests/e2e` subdirectories.
 
 ```
-private-trading-platform/
-├── programs/vault/           # Anchor program: custody, limits, intents, swap CPI
-├── encrypted-ixs/            # Arcis circuits (Arcium workspace convention)
-├── apps/
-│   ├── web/                  # Next.js — builder, wallet, client-side encryption
-│   └── api/                  # untrusted: scheduling, indexing, RPC relay
-├── packages/
-│   ├── sdk/                  # TS client: encryption, tx building
-│   ├── types/                # shared strategy/intent types
-│   └── config/               # mints, allowlists, cluster offsets
-├── tests/
-│   ├── unit/                 # circuit + program logic
-│   ├── surfpool/             # mainnet-fork: Jupiter, Pyth, vault
-│   └── e2e/                  # devnet full loop
-├── scripts/
-├── docs/
-├── RESEARCH.md  ARCHITECTURE.md  THREAT_MODEL.md  SECURITY.md  README.md
-└── .env.example
+silentedge/
+├── programs/vault/src/       lib.rs state.rs oracle.rs constants.rs errors.rs
+├── programs/hello_arcium/    smallest end-to-end Arcium program, kept as reference
+├── encrypted-ixs/src/lib.rs  Arcis circuits: store_strategy_v2, evaluate_strategy_v3,
+│                             export_strategy, add_ten
+├── apps/web/                 Next.js — builder, wallet, browser-side encryption,
+│                             portfolio, discovery, self-execute
+├── apps/api/src/             executor.ts (permissionless keeper loop),
+│                             jupiter.ts (/build route, onlyDirectRoutes)
+├── packages/sdk/src/         encrypt arcium decide indicators backtest candles
+├── packages/types/src/       shared strategy and intent types
+├── packages/config/src/      mints, decimals, program id — must match constants.rs
+├── tests/                    vault  trade-authorization  trade-authorization-devnet
+│                             swap-execution  e2e-devnet  encryption  executor
+│                             strategy  strategy-state  indicators  backtest
+│                             candles  amount  hello-arcium
+├── scripts/                  check-upgrade-authority  register-circuit  seed-fork-intent
+├── docs/                     magicblock-evaluation, research, testing, what-is-private,
+│                             oracle, visibility, arcium-hello-world
+└── Anchor.toml  Arcium.toml  Cargo.toml  package.json  pnpm-workspace.yaml
 ```
+
+No single environment runs the whole path, and the seam is `TradeIntent`: devnet
+has the Arcium MXE but no routable Jupiter liquidity; a surfpool mainnet fork has
+the liquidity but no MXE. On the fork the intent is seeded with a cheatcode
+rather than produced by a callback — `verify_output()` cannot be mocked, and a
+test-only instruction that writes an intent would put a forged-authorization path
+in the shipped program. `quote_mint` is USDC on mainnet and a test mint on
+devnet, because Circle holds devnet USDC's mint authority and an unfunded vault
+leaves the authorization path unexercised.
 
 ---
 
-## 13. V1 scope
+## 11. Scope
 
-Goal: a genuinely non-custodial vault with genuinely private rule evaluation, on devnet,
-with honest claims. Not a scaling story.
+**Built, on devnet.** Vault lifecycle (`initialize_vault`, `deposit`, `withdraw`,
+`pause`, `resume`, `stop`, `update_limits`, `set_exposure_limits`,
+`set_listing`), strategy lifecycle (`submit_strategy`, `convert_strategy`,
+`copy_strategy`), confidential evaluation (`init_trade_intent`,
+`evaluate_strategy`, both BLS-verified callbacks), `execute_trade` with the
+Jupiter CPI. One pair, USDC ↔ SOL, both mints pinned. Cluster pinning on both
+callbacks. Permissionless executor plus self-execute in the UI.
 
-- Vault program: `initialize_vault`, `deposit`, `withdraw`, `pause`, `resume`,
-  `submit_strategy`, `evaluate_strategy`, `evaluate_callback`, `execute_trade`
-- One pair: **USDC ↔ SOL**, both mints hard-allowlisted
-- Strategy: `entry_below`, `exit_above`, `stop_below` — visual builder only
-  (`size_bps` shipped public, in `VaultConfig`)
-- `Enc<Mxe, Strategy>` persistent encrypted state
-- **Cluster pinning (§7.1)** on both Arcium instructions — custody-critical
-- Pyth trigger + on-chain freshness/confidence guards, and an oracle-derived `min_out`
-- Jupiter Router `/build` CPI, account count bounded by `onlyDirectRoutes`
-  (`maxAccounts` is a quote-API parameter and does not bound a CPI)
-- Risk controls: trade cap and cooldown on entries, slippage floor on both sides,
-  owner-only pause/stop. **Not** a daily loss limit — see THREAT_MODEL T-31.
-- Permissionless executor + a "self-execute" button in the UI
-- Devnet end-to-end, plus Surfpool mainnet-fork tests for the swap/oracle path
-- SECURITY.md with the exact claims from §9
+**Deliberately not built.** A daily loss limit, a realised-price deviation band
+(both §5), MagicBlock, arbitrary user code, multiple pairs, multiple strategies
+per vault, mainnet.
 
-**Explicitly out of V1:** MagicBlock, user code, multiple pairs, multiple strategies per
-vault, mainnet.
-
-## 14. V2 scope
-
-- Restricted DSL compiling to a **fixed-shape** circuit: bounded opcode array, fixed
-  interpreter iterations, whitelisted operations only. Not arbitrary code.
-- More pairs; per-pair allowlists and liquidity floors
-- Multiple concurrent strategies per vault
-- Jittered evaluation cadence + randomised sizing to blunt threshold inference (T-9)
-- MXE authority moved to timelocked multisig, or an independent Arx node run by us to
-  guarantee the honest-node assumption
-- Mainnet, after external audit
-- Portfolio/backtest UI that leaks minimal strategy information
-
-**Still excluded in V2:** MagicBlock; arbitrary user-supplied code.
+**Next, roughly in order.** Move the upgrade authority to a timelocked multisig
+(T-3); give the cluster pin a detector so it grades ENFORCED; record the decision
+price in the callback so `max_oracle_deviation_bps` engages; benchmark the MPC
+term; jittered cadence and randomised sizing against threshold inference (T-9);
+a restricted DSL compiling to a fixed-shape circuit, because Arcis circuits must
+be fixed-shape.

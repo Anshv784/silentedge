@@ -4,7 +4,7 @@ Focused re-research of MagicBlock against the specific question: **can an Epheme
 accelerate the parts of the system we control?** Conducted 2026-08-15 against
 `https://docs.magicblock.gg/llms-full.txt` (516 KB, retrieved same day).
 
-This supersedes the brief §3 treatment in RESEARCH.md, which only established that a Jupiter
+This supersedes the brief §3 treatment in docs/research.md, which only established that a Jupiter
 swap cannot run inside an ER. That was necessary but not sufficient — the real question is
 whether our *own* accounts benefit.
 
