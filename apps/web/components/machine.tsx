@@ -41,24 +41,36 @@ const BEATS = [
 /** What each node is shown holding. Nonsense by construction — no single node
  *  holds a whole number, and the point of the beat is that these are useless
  *  on their own. Fixed so they survive hydration and never imply live data. */
-const SHARES = ["c1·7e", "0a·b4", "94·2f", "e6·38", "5d·d1"];
+const SHARES: [string, string, string][] = [
+  ["c1·7e", "40·9b", "d2·05"],
+  ["0a·b4", "8f·2c", "6e·77"],
+  ["94·2f", "13·d8", "ab·31"],
+  ["e6·38", "72·1a", "5c·90"],
+  ["5d·d1", "e9·64", "08·bf"],
+];
 
 /** The five node positions, as percentages of the stage. */
 const NODES = [
-  { x: 12, y: 18 },
-  { x: 78, y: 10 },
-  { x: 90, y: 62 },
-  { x: 50, y: 84 },
-  { x: 8, y: 66 },
+  { x: 18, y: 20 },
+  { x: 74, y: 17 },
+  { x: 80, y: 63 },
+  { x: 46, y: 82 },
+  { x: 16, y: 66 },
 ];
 
 export function Machine({ price }: { price: number | null }) {
   const [beat, setBeat] = useState(0);
 
+  /* A timeout keyed on `beat`, not a free-running interval. With an interval
+     the pips did nothing that lasted: you clicked one, and the next tick — up
+     to 2.6s later, or immediately — pulled you somewhere else. They are
+     labelled as controls, and under reduced motion they are the only way to
+     advance, so a click has to hold. Each beat now schedules the one after it,
+     which means clicking re-arms the clock and you get a full beat to read. */
   useEffect(() => {
-    const id = setInterval(() => setBeat((b) => (b + 1) % 3), 2600);
-    return () => clearInterval(id);
-  }, []);
+    const id = setTimeout(() => setBeat((b) => (b + 1) % 3), 2600);
+    return () => clearTimeout(id);
+  }, [beat]);
 
   return (
     <div className="select-none">
@@ -71,7 +83,7 @@ export function Machine({ price }: { price: number | null }) {
         {/* ---------------------------------------------------- beat 0 */}
         {/* Three price cards drop in and flip face-down to lock. */}
         <div
-          className="absolute inset-0 flex items-center justify-center gap-3 transition-opacity duration-300"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center gap-3 transition-opacity duration-300"
           style={{ opacity: beat === 0 ? 1 : 0 }}
           aria-hidden
         >
@@ -135,15 +147,21 @@ export function Machine({ price }: { price: number | null }) {
         </div>
 
         {/* ---------------------------------------------------- beat 1 */}
-        {/* The sealed block splits into three shards that fan to five nodes. */}
+        {/* One sealed block splits, and every node ends up holding a fragment
+            of all three prices and a whole copy of none.
+
+            This used to be five bare dots and three tiles on a large stage —
+            technically the right diagram, but almost entirely empty space, and
+            it did not show the thing that makes MPC MPC: that each node's copy
+            is USELESS, not just partial. Each node is a card now, listing what
+            it holds for buy / sell / stop. Fifteen fragments, no whole
+            numbers, and the box is full. */}
         <div
-          className="absolute inset-0 transition-opacity duration-300"
+          className="pointer-events-none absolute inset-0 transition-opacity duration-300"
           style={{ opacity: beat === 1 ? 1 : 0 }}
           aria-hidden
         >
-          {/* The links, drawn once as one static SVG. Five loose dots on a
-              large stage read as an empty box; the same five wired to a centre
-              read as a cluster, which is the whole point of the beat. */}
+          {/* Links first, so the cards paint over them. */}
           <svg
             className="absolute inset-0 h-full w-full"
             viewBox="0 0 100 100"
@@ -154,84 +172,65 @@ export function Machine({ price }: { price: number | null }) {
                 key={i}
                 x1="50"
                 y1="50"
-                x2={n.x + 2}
-                y2={n.y + 2}
+                x2={n.x}
+                y2={n.y}
                 stroke="var(--color-stroke)"
-                strokeWidth="0.4"
+                strokeWidth="0.35"
                 strokeDasharray="2 2"
               />
             ))}
           </svg>
+
+          {/* The origin: the sealed block from beat 0, now the thing being
+              divided. It shrinks as the shares land. */}
+          <span
+            className="absolute left-1/2 top-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg"
+            style={{
+              background: "var(--color-magenta)",
+              backgroundImage:
+                "radial-gradient(circle, rgba(11,6,32,.55) 1px, transparent 1.2px)",
+              backgroundSize: "5px 5px",
+              transform: `translate(-50%, -50%) scale(${beat === 1 ? 0.75 : 1})`,
+              transition: "transform 420ms var(--ease-arrive)",
+            }}
+          />
+
           {NODES.map((n, i) => (
-            /* Dot and label are positioned separately, not stacked. Stacked and
-               centred together, a 44px shard arriving on the node covered the
-               label — which is the one part of this beat that carries the
-               claim. The dot sits on the point; the label hangs below it. */
-            <span key={i}>
-              <span
-                className="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
-                style={{
-                  left: `${n.x + 2}%`,
-                  top: `${n.y + 2}%`,
-                  borderColor: "var(--color-magenta)",
-                  background: "var(--color-deep)",
-                }}
-              />
-              {/* Each node's share. Fixed strings, not random: a value that
-                  changed every render would be a lie about a computation that
-                  is not running, and would break hydration. They are nonsense
-                  on purpose — that IS the claim being illustrated. */}
-              <span
-                className="mono absolute -translate-x-1/2 text-[8px] tracking-[0.08em] text-[var(--color-text-3)]"
-                style={{
-                  left: `${n.x + 2}%`,
-                  top: `calc(${n.y + 2}% + 26px)`,
-                }}
-              >
-                {SHARES[i]}
-              </span>
-            </span>
-          ))}
-          {[0, 1, 2].map((i) => (
-            /* Two nested elements on purpose. `orbit` animates `transform`, so
-               putting both the fan-out translate and the orbit on one node
-               means the keyframes win and all three shards spin on top of each
-               other in the middle. The outer one travels; the inner one
-               orbits. */
             <span
               key={i}
-              className="absolute h-9 w-9"
+              className="absolute -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 px-2.5 py-2"
               style={{
-                /* Percentages, matching NODES, so a shard actually arrives AT
-                   the node it belongs to. The old version travelled a px
-                   offset scaled off the same numbers, which drifts with the
-                   stage width — the shards landed near nothing and the beat
-                   read as three tiles floating in a box. */
-                left: beat === 1 ? `${NODES[i].x + 2}%` : "50%",
-                top: beat === 1 ? `${NODES[i].y + 2}%` : "50%",
-                transform: `translate(-50%, -50%) scale(${beat === 1 ? 1 : 0.35})`,
-                transition: `left 340ms var(--ease-arrive) ${i * 80}ms, top 340ms var(--ease-arrive) ${i * 80}ms, transform 340ms var(--ease-arrive) ${i * 80}ms`,
+                left: `${n.x}%`,
+                top: `${n.y}%`,
+                borderColor: "var(--color-magenta)",
+                background: "var(--color-deep)",
+                opacity: beat === 1 ? 1 : 0,
+                transform: `translate(-50%, -50%) scale(${beat === 1 ? 1 : 0.6})`,
+                transition: `opacity 300ms ease ${i * 70}ms, transform 340ms var(--ease-arrive) ${i * 70}ms`,
               }}
             >
-              <span
-                className="block h-full w-full rounded-lg"
-                style={{
-                  background: "var(--color-magenta)",
-                  backgroundImage:
-                    "radial-gradient(circle, rgba(11,6,32,.55) 1px, transparent 1.2px)",
-                  backgroundSize: "5px 5px",
-                  animation:
-                    beat === 1 ? `orbit 3s linear ${420 + i * 80}ms infinite` : "none",
-                }}
-              />
+              <span className="mono block text-[8px] tracking-[0.14em] text-[var(--color-magenta)]">
+                NODE {i + 1}
+              </span>
+              {(["buy", "sell", "stop"] as const).map((k, j) => (
+                <span key={k} className="mt-1 flex items-center gap-1.5">
+                  <span className="mono text-[8px] text-[var(--color-text-3)]">
+                    {k}
+                  </span>
+                  <span className="mono tnum text-[9px] text-[var(--color-text-2)]">
+                    {SHARES[i][j]}
+                  </span>
+                </span>
+              ))}
             </span>
           ))}
         </div>
 
+
         {/* ---------------------------------------------------- beat 2 */}
         {/* A signed decision pops out and the fill prints publicly. */}
         <div
-          className="absolute inset-0 flex flex-col items-center justify-center gap-4 transition-opacity duration-300"
+          className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 transition-opacity duration-300"
           style={{ opacity: beat === 2 ? 1 : 0 }}
           aria-hidden
         >
@@ -275,7 +274,12 @@ export function Machine({ price }: { price: number | null }) {
         </div>
 
         {/* The beat pips, bottom-left. Also the tap targets under reduced
-            motion, where the loop does not advance on its own. */}
+            motion, where the loop does not advance on its own — which is why
+            the three beat layers above are pointer-events-none. They are
+            aria-hidden decoration covering the whole stage, and they were
+            swallowing every click aimed at these: elementFromPoint at a pip's
+            own centre returned the beat-1 link SVG, so the only control on the
+            diagram could not be hit by a mouse. */}
         <div className="absolute bottom-3 left-4 flex gap-1.5">
           {[0, 1, 2].map((i) => (
             <button
