@@ -38,15 +38,20 @@ import {
   arciumAccounts,
   CIRCUIT_EVALUATE,
   freshComputationOffset,
-} from "@silentedge/sdk/src/arcium.ts";
+} from "@silentedge/sdk/arcium";
 import {
   decide,
   type IntentView,
   type StrategyView,
   type VaultView,
-} from "@silentedge/sdk/src/decide.ts";
+} from "@silentedge/sdk/decide";
 
-import { fetchRoute } from "./jupiter.js";
+import { fetchRoute } from "./jupiter.ts";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+
+/* Committed rather than read from target/, which is gitignored — a fresh clone
+   had no such file and the executor could not start. See idl/README.md. */
+const IDL_PATH = new URL("../../../idl/vault.json", import.meta.url).pathname;
 
 const RPC = process.env.EXECUTOR_RPC ?? "http://127.0.0.1:8899";
 const KEYPAIR = process.env.EXECUTOR_KEYPAIR ?? "";
@@ -72,7 +77,7 @@ function log(...args: unknown[]) {
 async function loadProgram(): Promise<Ctx> {
   if (!KEYPAIR) throw new Error("EXECUTOR_KEYPAIR is required");
   const anchor = anchorPkg as any;
-  const idl = JSON.parse(fs.readFileSync("target/idl/vault.json", "utf-8"));
+  const idl = JSON.parse(fs.readFileSync(IDL_PATH, "utf-8"));
   const connection = new Connection(RPC, "confirmed");
   const payer = Keypair.fromSecretKey(
     Buffer.from(JSON.parse(fs.readFileSync(KEYPAIR, "utf-8")))
@@ -151,7 +156,7 @@ async function readVault(ctx: Ctx, vault: PublicKey) {
   // cooldown only when there is nothing to sell, so a wrong reading here can
   // disarm an exit. Treat an unreadable balance as a position held rather than
   // as flat — evaluating unnecessarily costs a computation fee, not a stop.
-  const baseAta = ata.getAssociatedTokenAddressSync(v.baseMint, vault, true);
+  const baseAta = getAssociatedTokenAddressSync(v.baseMint, vault, true);
   const baseBalance = await ctx.connection
     .getTokenAccountBalance(baseAta)
     .then((r) => BigInt(r.value.amount))
@@ -193,7 +198,6 @@ async function readVault(ctx: Ctx, vault: PublicKey) {
 async function queueEvaluation(ctx: Ctx, vault: PublicKey, v: any, strategyPda: PublicKey, intentPda: PublicKey) {
   const offset = freshComputationOffset();
   const arcium = arciumAccounts(ctx.programId, CLUSTER_OFFSET, offset, CIRCUIT_EVALUATE);
-  const ata = await import("@solana/spl-token");
   const tx = await ctx.program.methods
     .evaluateStrategy(new BN(offset.toString()))
     .accountsPartial({
@@ -201,8 +205,8 @@ async function queueEvaluation(ctx: Ctx, vault: PublicKey, v: any, strategyPda: 
       vaultConfig: vault,
       strategyState: strategyPda,
       tradeIntent: intentPda,
-      vaultQuoteAta: ata.getAssociatedTokenAddressSync(v.quoteMint, vault, true),
-      vaultBaseAta: ata.getAssociatedTokenAddressSync(v.baseMint, vault, true),
+      vaultQuoteAta: getAssociatedTokenAddressSync(v.quoteMint, vault, true),
+      vaultBaseAta: getAssociatedTokenAddressSync(v.baseMint, vault, true),
       priceUpdate: new PublicKey(process.env.PYTH_SOL_USD!),
       ...arcium,
     })
@@ -211,9 +215,8 @@ async function queueEvaluation(ctx: Ctx, vault: PublicKey, v: any, strategyPda: 
 }
 
 async function spendIntent(ctx: Ctx, vault: PublicKey, v: any, intent: IntentView, strategyPda: PublicKey, intentPda: PublicKey) {
-  const ata = await import("@solana/spl-token");
-  const quote = ata.getAssociatedTokenAddressSync(v.quoteMint, vault, true);
-  const base = ata.getAssociatedTokenAddressSync(v.baseMint, vault, true);
+  const quote = getAssociatedTokenAddressSync(v.quoteMint, vault, true);
+  const base = getAssociatedTokenAddressSync(v.baseMint, vault, true);
 
   const si = await fetchRoute({
     inputMint: intent.side === 1 ? v.quoteMint : v.baseMint,
