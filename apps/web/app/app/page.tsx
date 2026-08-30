@@ -254,13 +254,17 @@ export default function Overview() {
               </div>
             ) : (
               <>
-                {/* Not the shielded hatch. This number is public; this page
-                    just has no address to look it up with. */}
+                {/* Not the shielded hatch — this number is public, the page
+                    just has no address to look it up with. And not masked
+                    digits either: at figure size the hatch read as a barcode,
+                    and the digits underneath it were `0,000.00`, which is the
+                    one thing this must never appear to say. An em-dash is what
+                    the connected-but-unread case above already uses. */}
                 <div
-                  className="unknown tabular mt-4 inline-block text-figure"
+                  className="tabular mt-4 text-figure text-[var(--color-ink-faint)]"
                   aria-label="Not available without a connected wallet"
                 >
-                  0,000.00
+                  —
                 </div>
                 <div className="u-label mt-4">
                   Connect a wallet to read this vault
@@ -476,23 +480,43 @@ export default function Overview() {
                   the only stored copy is encrypted to the cluster.
                 </p>
               ) : (
-                <div className="space-y-3">
-                  {["Buy below", "Sell above", "Stop below", "Size"].map((l) => (
-                    <div
-                      key={l}
-                      className="flex items-baseline justify-between gap-3 border-b border-[var(--color-rule)] pb-3"
-                    >
-                      <span className="text-caption text-[var(--color-ink-soft)]">
-                        {l}
-                      </span>
-                      <span
-                        className="redacted tabular px-3 text-lead"
-                        aria-label="Not set"
+                /* These rows used to render the magenta hatch. This branch
+                   only runs when there is no draft AND nothing is armed — so
+                   nothing is shielded, nothing even exists yet. Magenta means
+                   SHIELDED everywhere else in this product; spending it on an
+                   empty form claimed a privacy property that is not in play.
+                   Empty is empty. The magenta rail on the card is the promise;
+                   the copy below says when it starts being true. */
+                <div>
+                  <div className="space-y-3">
+                    {["Buy below", "Sell above", "Stop below", "Size"].map((l) => (
+                      <div
+                        key={l}
+                        className="flex items-baseline justify-between gap-3 border-b border-[var(--color-rule)] pb-3"
                       >
-                        000.00
-                      </span>
-                    </div>
-                  ))}
+                        <span className="text-caption text-[var(--color-ink-soft)]">
+                          {l}
+                        </span>
+                        <span
+                          className="tabular text-lead text-[var(--color-ink-faint)]"
+                          aria-label="Not set"
+                        >
+                          —
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-5 text-caption text-[var(--color-ink-soft)]">
+                    Nothing is set yet. Once you arm a strategy these four
+                    numbers are encrypted to the MPC cluster before they leave
+                    this tab — after that this panel cannot show them back to
+                    you, because the only stored copy is one no single party can
+                    read.
+                  </p>
+                  <p className="mt-3 text-caption text-[var(--color-ink-faint)]">
+                    Every trade the strategy makes is still public on Solana.
+                    Enough of them narrow the thresholds behind it.
+                  </p>
                 </div>
               )}
               <Link href="/app/strategy" className="btn btn-lg btn-primary mt-6 w-full">
