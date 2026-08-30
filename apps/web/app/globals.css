@@ -90,10 +90,15 @@
   --text-figure--letter-spacing: -0.03em;
   --text-figure--font-weight: 700;
 
-  /* --- SPACING. Three tiers. --- */
-  --space-1: 10px;
-  --space-2: 26px;
-  --space-3: 104px;
+  /* --- SPACING. Three tiers.
+     NOT named --space-*: that is Tailwind v4's own namespace, and declaring it
+     here silently repointed every numeric spacing utility in the app at this
+     three-entry semantic scale. `space-y-3` meant 104px, `gap-2` meant 26px,
+     and every value with no entry fell through. Prefixed so the two callers
+     that actually want these tiers get them and Tailwind keeps its 4px grid. */
+  --pad-1: 10px;
+  --pad-2: 26px;
+  --pad-3: 104px;
 
   /* --- MOTION. Three easings plus linear. No fifth. --- */
   --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.15); /* overshoot = personality */
@@ -167,7 +172,7 @@
   }
   .block {
     background: var(--color-card);
-    padding: var(--space-2);
+    padding: var(--pad-2);
   }
   .prov {
     position: relative;
@@ -392,6 +397,16 @@ samp,
     );
   animation: drift 34s ease-in-out infinite alternate;
   will-change: transform;
+}
+
+/* The app is not the landing page.
+   Inside the shell the grid floor and the coloured wash are noise: the wash
+   spends MAGENTA, which everywhere else in this product means SHIELDED, on
+   decoration sitting behind dense data — and the floor animates forever behind
+   a screen nobody is scrolling. Keep the base black gradient, drop both. */
+body:has(.app-shell) .ground::after,
+body:has(.app-shell) .ground__grid {
+  display: none;
 }
 
 @keyframes drift {

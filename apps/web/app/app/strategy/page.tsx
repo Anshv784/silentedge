@@ -1327,7 +1327,7 @@ export default function StrategyStudio() {
 
           {/* The terminus. It follows you down the column rather than sitting
               after four hundred words of explanation. */}
-          <div className="sticky bottom-0 z-20 border-t border-[var(--color-rule)] bg-[var(--color-paper)] p-[var(--space-2)]">
+          <div className="sticky bottom-0 z-20 border-t border-[var(--color-rule)] bg-[var(--color-paper)] p-[var(--pad-2)]">
             <button
               className="btn btn-primary btn-xl w-full"
               disabled={working || !s.connected || !s.vaultStatus}
