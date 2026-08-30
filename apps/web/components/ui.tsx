@@ -130,7 +130,13 @@ export function BlockHead({
   right?: ReactNode;
 }) {
   return (
-    <div className="mb-5 flex items-start justify-between gap-4">
+    /* flex-wrap, or a wide `right` shreds the title. The row pairs a
+       min-w-0 left column with a shrink-0 right one, so the right slot wins
+       every contest for width — fine for a badge, fatal for the eleven
+       timeframe buttons on the strategy chart, which squeezed "SOL / USD"
+       down to 15px and broke it across three lines. Wrapping drops the right
+       slot to its own line instead. */
+    <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
       <div className="min-w-0">
         {eyebrow ? (
           <div className="u-label mb-2">

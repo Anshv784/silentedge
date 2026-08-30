@@ -606,9 +606,15 @@ export default function StrategyStudio() {
         {/* ============================================ left: the inputs */}
         <div className="grid gap-px bg-[var(--color-void)]">
           <Block prov="public">
+            {/* The hint is NOT passed to BlockHead here. BlockHead lays out
+                title and hint against `right` in one flex row with the right
+                slot shrink-0, which is fine for a badge or a button — but this
+                right slot is eleven wrapping timeframe buttons. They claimed
+                the width and starved the hint down to 144px, where it wrapped
+                to eight lines. Title and timeframes share the row; the
+                sentence gets its own full-width line below. */}
             <BlockHead
               title={TRADABLE.label}
-              hint="Your levels drawn on the display feed as price lines. The candles are context; the program acts on the on-chain price account."
               right={
                 <div className="flex flex-wrap gap-0.5">
                   {TIMEFRAMES.map((t, i) => (
@@ -635,6 +641,10 @@ export default function StrategyStudio() {
                 </div>
               }
             />
+            <p className="-mt-3 mb-4 max-w-[68ch] text-caption text-[var(--color-ink-soft)]">
+              Your levels drawn on the display feed as price lines. The candles
+              are context; the program acts on the on-chain price account.
+            </p>
             <div className="mb-2">
               <OhlcLegend
                 hover={hover}
