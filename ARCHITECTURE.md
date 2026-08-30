@@ -13,36 +13,46 @@ the *deployed* code and is conditional on that key.
 
 ## 1. The whole system
 
+```mermaid
+flowchart TB
+  subgraph BROWSER
+    A1["Strategy builder<br/>entry_below · exit_above · stop_below"]
+    A2["Encrypt: x25519 + RescueCipher<br/>plaintext never leaves the page"]
+  end
+
+  subgraph SOLANA["SOLANA · programs/vault"]
+    C1["submit_strategy<br/>stores Enc(Shared, Strategy)"]
+    C2["evaluate_strategy<br/>reads Pyth SOL/USD on chain<br/>reads both vault ATAs on chain"]
+    C3["evaluate_strategy_v3_callback<br/>cluster pin + verify_output()"]
+    C4["TradeIntent<br/>side · amount_in · expiry<br/>vault_nonce · strategy_version"]
+    C5["execute_trade<br/>13 on-chain checks · fresh Pyth read to min_out<br/>CPI Jupiter via invoke_signed(vault PDA)<br/>4 post-swap balance assertions"]
+    C6["Both legs land in the vault's own ATAs"]
+  end
+
+  subgraph ARCIUM["ARCIUM MXE"]
+    D1["store_strategy_v2<br/>re-encrypt"]
+    D2["Enc(Mxe, Strategy)<br/>cluster-only, nobody online"]
+    D3["evaluate_strategy_v3<br/>secret thresholds meet the public price<br/>both branches always run"]
+  end
+
+  A1 --> A2
+  A2 -- "ciphertext only" --> C1
+  C1 --> D1 --> D2
+  D2 -. "BLS callback" .-> C1
+  SCHED(["ANYONE: scheduler<br/>executor, keeper, or the user"]) --> C2
+  C2 -- "queue_computation" --> D3
+  D3 -- "(action, amount_in)" --> C3
+  C3 == "BLS threshold signature" ==> C4
+  C3 -. "HOLD writes nothing" .-> STOP([" "])
+  EXEC(["ANYONE: executor<br/>holds no privilege"]) --> C5
+  C4 --> C5 --> C6
+
+  style C3 stroke-width:3px
 ```
- BROWSER                  SOLANA                     ARCIUM MXE
- strategy builder
- entry_below/exit_above/stop_below
-   │ x25519 + RescueCipher  ciphertext only
-   └── encrypt ──────────► submit_strategy ────────► store_strategy_v2
-       plaintext never      Enc<Shared,Strategy>         │ re-encrypt
-       leaves the page            ▲                      ▼
-                                  └── BLS callback ── Enc<Mxe,Strategy>
- ANYONE                       │                      cluster-only,
- scheduler ──────────► evaluate_strategy             nobody online
- (executor, keeper,     Pyth SOL/USD read on chain
-  or the user)          both vault ATAs read on chain
-                        queue_computation ────────► evaluate_strategy_v3
-                                ┌──────────────────  secret thresholds meet
-                                ▼ (action,amount_in) public price; both
-                   evaluate_strategy_v3_callback     branches always run
-                     cluster pin + verify_output()  ← the trust boundary
-                                ▼  (BLS threshold signature)
-                          TradeIntent               HOLD writes nothing
-                          side, amount_in, expiry,
-                          vault_nonce, strategy_version
- ANYONE                         │
- executor submits ─────► execute_trade ── 13 on-chain checks ──┐
- (holds no privilege)     fresh Pyth read → min_out            │
-                          CPI Jupiter, invoke_signed(vault PDA)│
-                          4 post-swap balance assertions ◄─────┘
-                                ▼
-                   both legs land in the vault's own ATAs
-```
+
+**C3 is the trust boundary.** The cluster pin and `verify_output()` are what
+stand between an MPC result and a writable `TradeIntent`; everything downstream
+of it is enforced by the program, not asserted by the cluster.
 
 ---
 
@@ -63,11 +73,16 @@ Sourced findings behind these choices: [`docs/research.md`](docs/research.md).
 
 ## 3. Money flow
 
-```
-owner wallet ──deposit──► vault quote ATA ──execute_trade──► vault base ATA
-      ▲                    (PDA-owned)      both legs stay    (wSOL)
-      └──── withdraw ──────────────────────  in-vault ───────────┘
-            owner signs; destination derived from vault_config.owner
+```mermaid
+flowchart LR
+  W(["Owner wallet"])
+  Q["Vault quote ATA<br/>PDA-owned"]
+  B["Vault base ATA<br/>wSOL"]
+
+  W -- "deposit" --> Q
+  Q -- "execute_trade" --> B
+  B -- "execute_trade" --> Q
+  Q -- "withdraw · owner signs<br/>destination derived from vault_config.owner" --> W
 ```
 
 > Funds leave a vault by exactly two paths: a swap between the two allowlisted
@@ -87,16 +102,13 @@ user's vault. Removed, not repointed.
 
 ## 4. Strategy flow
 
-```
-1 author    apps/web — entry_below, exit_above, stop_below (size_bps is public)
-2 encrypt   packages/sdk/src/encrypt.ts — x25519 ECDH to the MXE key,
-            RescueCipher, fresh nonce. Plaintext never leaves the page.
-3 submit    submit_strategy(...)      [owner-signed] → Enc<Shared, Strategy>
-4 convert   convert_strategy(offset)  [owner-signed] → store_strategy_v2
-                                      → callback writes Enc<Mxe, Strategy>
-5 evaluate  evaluate_strategy(offset) [permissionless] → evaluate_strategy_v3
-                                      → callback writes TradeIntent, or nothing
-```
+| # | Step | Where | Who signs | Result |
+|---|---|---|---|---|
+| 1 | author | `apps/web` | — | `entry_below`, `exit_above`, `stop_below`. `size_bps` is public. |
+| 2 | encrypt | `packages/sdk/src/encrypt.ts` | — | x25519 ECDH to the MXE key, RescueCipher, fresh nonce. **Plaintext never leaves the page.** |
+| 3 | submit | `submit_strategy(...)` | owner | `Enc(Shared, Strategy)` on chain |
+| 4 | convert | `convert_strategy(offset)` | owner | → `store_strategy_v2`, callback writes `Enc(Mxe, Strategy)` |
+| 5 | evaluate | `evaluate_strategy(offset)` | **anyone** | → `evaluate_strategy_v3`, callback writes a `TradeIntent` — or nothing, on HOLD |
 
 **Why two steps.** `Enc<Shared, _>` is readable by the submitter. `Enc<Mxe, _>`
 is readable only by the cluster acting together, which is what lets evaluation
