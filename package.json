@@ -2,14 +2,16 @@
   "name": "silentedge",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "scripts": {
     "test": "ts-mocha -p ./tsconfig.json -t 120000 tests/**/*.ts",
-    "test:pure": "ts-mocha -p ./tsconfig.json tests/amount.ts tests/backtest.ts tests/encryption.ts tests/executor.ts tests/strategy.ts",
+    "test:pure": "ts-mocha -p ./tsconfig.json tests/amount.ts tests/backtest.ts tests/encryption.ts tests/executor.ts tests/indicators.ts tests/candles.ts tests/wiring.ts tests/strategy.ts",
     "test:local": "ts-mocha -p ./tsconfig.json -t 120000 tests/vault.ts tests/trade-authorization.ts",
     "test:devnet": "ts-mocha -p ./tsconfig.json -t 300000 tests/e2e-devnet.ts tests/trade-authorization-devnet.ts",
     "test:fork": "ts-mocha -p ./tsconfig.json -t 300000 tests/swap-execution.ts",
-    "surfpool": "surfpool start --network devnet --no-deploy --airdrop-amount 10000000000000"
+    "surfpool": "surfpool start --network devnet --no-deploy --airdrop-amount 10000000000000",
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm --filter @silentedge/web typecheck && pnpm --filter @silentedge/executor typecheck",
+    "check": "pnpm typecheck && pnpm test:pure && cargo test -p vault --lib"
   },
   "dependencies": {
     "@anchor-lang/core": "^1.1.2",

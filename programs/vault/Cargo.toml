@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "SilentEdge non-custodial trading vault"
 edition.workspace = true
 rust-version.workspace = true
+license = "Apache-2.0"
 
 [lib]
 crate-type = ["cdylib", "lib"]
