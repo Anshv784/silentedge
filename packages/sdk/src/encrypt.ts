@@ -65,7 +65,7 @@ export const STRATEGY_FIELD_ORDER = [
  * `sizeBps` is deliberately absent. It is a public vault setting, not an
  * encrypted field: the traded amount and the vault balance are both public in
  * the same transaction, so their ratio recovers it exactly from one trade.
- * See THREAT_MODEL T-38.
+ * See SECURITY.md T-38.
  */
 
 /** What the ciphertext actually covers — `sizeBps` is public and not in here. */

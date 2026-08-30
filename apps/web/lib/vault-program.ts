@@ -25,7 +25,10 @@ const CLUSTER_OFFSET = Number(
 );
 
 // Build artifact. Run `anchor build` before building the web app.
-import idl from "../../../target/idl/vault.json";
+/* `idl/`, not `target/`. Anchor writes the IDL into target/, which is
+   gitignored — so a fresh clone imported a file that did not exist and the app
+   would not start at all. See idl/README.md for how to regenerate. */
+import idl from "../../../idl/vault.json";
 
 /**
  * Risk limits applied to new vaults.
@@ -33,7 +36,7 @@ import idl from "../../../target/idl/vault.json";
  * Changeable after creation: `update_limits` is owner-only and bumps the vault
  * nonce, which invalidates any authorization already in flight. `sizeBps` lives
  * here rather than in the encrypted strategy because a single trade recovers it
- * exactly from public data (THREAT_MODEL T-38).
+ * exactly from public data (SECURITY.md T-38).
  */
 export const DEFAULT_LIMITS = {
   maxTradeBps: 1_000, // 10% of the vault per trade

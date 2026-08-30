@@ -8,5 +8,14 @@
   "@arcium-hq/client": "^0.14.1",
   "@silentedge/types": "workspace:*",
   "bn.js": "^5.2.1"
+ },
+ "exports": {
+  ".": "./src/index.ts",
+  "./indicators": "./src/indicators.ts",
+  "./candles": "./src/candles.ts",
+  "./backtest": "./src/backtest.ts",
+  "./decide": "./src/decide.ts",
+  "./encrypt": "./src/encrypt.ts",
+  "./arcium": "./src/arcium.ts"
  }
 }

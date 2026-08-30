@@ -1,10 +1,22 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
+import { useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { fetchHistory, RANGES, PAIRS, type Candle } from "@/lib/market";
-import { runBacktest, type BacktestResult } from "@silentedge/sdk";
-import { Panel } from "@/components/readouts";
+import { runBacktest, type BacktestResult } from "@silentedge/sdk/backtest";
+import {
+  Alert,
+  Block,
+  BlockHead,
+  Chart,
+  Gate,
+  PageHead,
+  Prov,
+  Reveal,
+  Row,
+  SPRINGS,
+  Stat,
+} from "@/components/ui";
 
 const usd = (n: string) => BigInt(Math.round(Number(n) * 1e6));
 const NEVER_SELL = 18_446_744_073_709_551_615n;
@@ -23,6 +35,11 @@ const NO_STOP = 0n;
  * `evaluate_strategy_v3` and `execute_trade` statement for statement and is
  * tested against them in tests/backtest.ts. A simulator that quietly diverges
  * from production is how a user ends up funding a strategy they never tested.
+ *
+ * The layout is a two-column ledger: rules on the left, the result beside them
+ * rather than under 800px of nothing. Editing a threshold and re-reading the
+ * return is one glance, not one scroll, and the page has a shape before it has
+ * an answer.
  */
 export default function BacktestPage() {
   const [entry, setEntry] = useState("");
@@ -38,7 +55,10 @@ export default function BacktestPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
-  const [ranOver, setRanOver] = useState<string | null>(null);
+  /** The window the data actually covered, and whether it came back short. */
+  const [ranOver, setRanOver] = useState<{ text: string; short: boolean } | null>(
+    null
+  );
 
   const hasRule = entry.trim() || exit.trim() || stop.trim();
 
@@ -76,25 +96,27 @@ export default function BacktestPage() {
         Number(start)
       );
       setResult(r);
-      setRanOver(`${range.label} of ${PAIRS[0].label}, ${series.length} points`);
+
+      // Report the window the data actually covered, not the one that was
+      // asked for. Pyth's unauthenticated history endpoint reaches back thirty
+      // days, so a one-year request comes back short — and a result labelled
+      // "1y" that ran over a month is the kind of quiet wrongness this project
+      // exists to avoid. See SECURITY.md §4b for the key that lifts it.
+      const spanDays = (series[series.length - 1].t - series[0].t) / 86_400;
+      const short = spanDays < range.days * 0.9;
+      setRanOver({
+        short,
+        text: short
+          ? `${spanDays.toFixed(1)} days of ${PAIRS[0].label}, ${series.length} points — ` +
+            `${range.label} was requested, but the price source only goes back that far`
+          : `${range.label} of ${PAIRS[0].label}, ${series.length} points`,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setRunning(false);
     }
   }
-
-  const equityPath = useMemo(() => {
-    if (!result || result.equity.length < 2) return "";
-    const vals = result.equity.map((e) => e.value);
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const span = max - min || 1;
-    const step = 596 / (vals.length - 1);
-    return vals
-      .map((v, i) => `${i === 0 ? "M" : "L"}${(2 + i * step).toFixed(2)},${(2 + 116 * (1 - (v - min) / span)).toFixed(2)}`)
-      .join(" ");
-  }, [result]);
 
   const field = (
     label: string,
@@ -103,49 +125,76 @@ export default function BacktestPage() {
     placeholder: string,
     hint?: string
   ) => (
-    <label className="text-[11px]">
-      <span className="text-[var(--color-ink-soft)]">{label}</span>
+    <label className="block">
+      <span className="u-label block text-[var(--color-ink-soft)]">{label}</span>
       <input
         value={value}
         onChange={(e) => set(e.target.value)}
         placeholder={placeholder}
         inputMode="decimal"
-        className="tabular mt-1 w-full border border-[var(--color-rule)] bg-[var(--color-paper)] px-2 py-1.5 text-[12px]"
+        className="field tabular mt-2"
       />
       {hint ? (
-        <span className="mt-1 block text-[10px] text-[var(--color-ink-soft)]">{hint}</span>
+        <span className="mt-2 block text-caption text-[var(--color-ink-soft)]">
+          {hint}
+        </span>
       ) : null}
     </label>
   );
 
+  const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+
   return (
-    <main className="grid-field min-h-dvh">
-      <div className="mx-auto max-w-5xl px-5 pb-24 pt-8 sm:px-8">
-        <header className="mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-[var(--color-rule)] pb-6">
-          <div>
-            <Link href="/" className="text-[15px] font-medium tracking-[0.04em] underline-offset-4 hover:underline">
-              SilentEdge
-            </Link>
-            <p className="mt-1 text-[13px] text-[var(--color-ink-soft)]">
-              Simulate a rule set over past prices.
-            </p>
-          </div>
-          <nav className="flex items-center gap-4 text-[13px]">
-            <Link href="/app" className="underline-offset-4 hover:underline">Vault</Link>
-            <Link href="/app/market" className="underline-offset-4 hover:underline">Market</Link>
-            <span className="text-[var(--color-ink-soft)]">Backtest</span>
-          </nav>
-        </header>
+    <>
+      <PageHead
+        title="Backtest"
+        subtitle="Simulate a rule set over past prices"
+      />
 
-        <div className="mb-5 border border-[var(--color-exposed)] px-4 py-3 text-[12px] leading-relaxed">
-          <strong>A simulation, not a forecast.</strong> Past prices tell you how
-          a rule set would have behaved, not how it will. These results exclude
-          price impact, MEV, and the delay between a decision and its execution;
-          a flat cost stands in for spread and fees.
-        </div>
+      {/* The page's central caveat, at reading size rather than as a 12px
+          strip. Copy verbatim from the previous build. `exposed` doubles as
+          the caution tone; nothing here is claiming the numbers are on
+          chain. */}
+      <div
+        className="border-l-4 px-5 py-4 text-body"
+        style={{
+          borderColor: "var(--color-exposed)",
+          background:
+            "color-mix(in srgb, var(--color-exposed) 10%, transparent)",
+        }}
+      >
+        <strong
+          className="font-medium"
+          style={{ color: "var(--color-exposed)" }}
+        >
+          A simulation, not a forecast.
+        </strong>{" "}
+        <span className="text-[var(--color-ink-soft)]">
+          Past prices tell you how a rule set would have behaved, not how it
+          will. These results exclude price impact, MEV, and the delay between a
+          decision and its execution; a flat cost stands in for spread and fees.
+        </span>
+      </div>
 
-        <Panel title="Rules" index="01" note="Typed here — the stored strategy is encrypted and cannot be read back.">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      {/* Direct child of AnimatePresence, with no wrapper between them, or the
+          declared exit never runs. */}
+      <AnimatePresence>
+        {error ? <Alert tone="bad">{error}</Alert> : null}
+      </AnimatePresence>
+
+      <Reveal
+        as="div"
+        className="ledger mt-8 lg:grid-cols-[minmax(0,440px)_minmax(0,1fr)]"
+      >
+        {/* ------------------------------------------------------- the rules */}
+        <Block>
+          <BlockHead
+            eyebrow="01"
+            title="Rules"
+            hint="Typed here — the stored strategy is encrypted and cannot be read back."
+          />
+
+          <div className="grid grid-cols-2 gap-x-5 gap-y-6">
             {field("Buy below ($)", entry, setEntry, "150", "leave blank for no entry")}
             {field("Take profit above ($)", exit, setExit, "180", "blank = never")}
             {field("Stop below ($)", stop, setStop, "120", "blank = no stop")}
@@ -156,134 +205,253 @@ export default function BacktestPage() {
             {field("Starting balance", start, setStart, "1000", "quote units")}
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="u-label mb-3 mt-8 text-[var(--color-ink-faint)]">
+            Window
+          </div>
+          <div className="flex flex-wrap gap-2">
             {RANGES.map((r, i) => (
               <button
                 key={r.label}
                 onClick={() => setRangeIdx(i)}
                 aria-pressed={i === rangeIdx}
-                className={`border px-3 py-1.5 text-[12px] ${
+                className={`btn relative ${
                   i === rangeIdx
-                    ? "border-[var(--color-signal)] bg-[var(--color-signal)] text-white"
-                    : "border-[var(--color-rule)] hover:bg-[var(--color-paper)]"
+                    ? "border-[var(--color-signal)] text-[var(--color-on-signal)]"
+                    : "btn-ghost"
                 }`}
               >
-                {r.label}
+                {i === rangeIdx ? (
+                  <motion.span
+                    aria-hidden
+                    layoutId="backtest-window"
+                    transition={SPRINGS.snap}
+                    className="absolute inset-0 rounded-[4px] bg-[var(--color-signal)]"
+                  />
+                ) : null}
+                <span className="relative">{r.label}</span>
               </button>
             ))}
-            <button
-              onClick={run}
-              disabled={running || !hasRule}
-              className="ml-auto border border-[var(--color-signal)] bg-[var(--color-signal)] px-4 py-1.5 text-[12px] text-white disabled:opacity-40"
-            >
-              {running ? "Running…" : "Run backtest"}
-            </button>
           </div>
+
+          <button
+            onClick={run}
+            disabled={running || !hasRule}
+            className="btn btn-lg btn-primary mt-6 w-full"
+          >
+            {running ? "Running…" : "Run backtest"}
+          </button>
           {!hasRule ? (
-            <p className="mt-2 text-[11px] text-[var(--color-ink-soft)]">
+            <p className="mt-3 text-caption text-[var(--color-ink-soft)]">
               Add at least one rule. A strategy with no rules never trades.
             </p>
           ) : null}
-        </Panel>
+        </Block>
 
-        {error ? (
-          <div className="mt-5 border border-[var(--color-exposed)] px-4 py-3 text-[12px] text-[var(--color-exposed)]">
-            {error}
-          </div>
-        ) : null}
-
-        {result ? (
-          <div className="mt-5 space-y-5">
-            <Panel title="Result" index="02" note={ranOver ?? undefined}>
-              <dl className="tabular grid grid-cols-2 gap-x-6 gap-y-1.5 text-[12px] sm:grid-cols-3">
-                <dt className="text-[var(--color-ink-soft)]">Starting value</dt>
-                <dd>{result.startValue.toFixed(2)}</dd>
-                <dt className="text-[var(--color-ink-soft)]">Ending value</dt>
-                <dd>{result.endValue.toFixed(2)}</dd>
-                <dt className="text-[var(--color-ink-soft)]">Return</dt>
-                <dd className={result.returnPct >= 0 ? "text-[var(--color-shielded)]" : "text-[var(--color-exposed)]"}>
-                  {result.returnPct >= 0 ? "+" : ""}{result.returnPct.toFixed(2)}%
-                </dd>
-                <dt className="text-[var(--color-ink-soft)]">Buy and hold</dt>
-                <dd>{result.holdReturnPct >= 0 ? "+" : ""}{result.holdReturnPct.toFixed(2)}%</dd>
-                <dt className="text-[var(--color-ink-soft)]">Max drawdown</dt>
-                <dd>-{result.maxDrawdownPct.toFixed(2)}%</dd>
-                <dt className="text-[var(--color-ink-soft)]">Trades</dt>
-                <dd>{result.trades.length}</dd>
-                <dt className="text-[var(--color-ink-soft)]">Round trips</dt>
-                <dd>
-                  {result.wins + result.losses === 0
-                    ? "none completed"
-                    : `${result.wins}W / ${result.losses}L`}
-                </dd>
-                <dt className="text-[var(--color-ink-soft)]">Decisions skipped</dt>
-                <dd>{result.skipped.length}</dd>
-              </dl>
-
-              {result.trades.length === 0 ? (
-                <p className="mt-4 text-[12px] leading-relaxed text-[var(--color-ink-soft)]">
-                  The rules never fired over this window. That is a real result,
-                  not an error — the price never crossed a threshold, or every
-                  decision was refused by the limits.
-                </p>
-              ) : null}
-
-              {equityPath ? (
-                <svg viewBox="0 0 600 120" className="mt-4 h-28 w-full" role="img" aria-label="Simulated equity curve">
-                  <path d={equityPath} fill="none" stroke="var(--color-signal)" strokeWidth="1.5" />
-                </svg>
-              ) : null}
-            </Panel>
-
-            {result.skipped.length > 0 ? (
-              <Panel title="Decisions the limits refused" index="03">
-                <p className="mb-2 text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
-                  The strategy wanted to act and the vault&rsquo;s own rules said
-                  no. These are counted because a backtest that silently drops
-                  them overstates how often the strategy would have traded.
-                </p>
-                <ul className="tabular space-y-1 text-[11px]">
-                  {Object.entries(
-                    result.skipped.reduce<Record<string, number>>((acc, s) => {
-                      acc[s.reason] = (acc[s.reason] ?? 0) + 1;
-                      return acc;
-                    }, {})
-                  ).map(([reason, n]) => (
-                    <li key={reason} className="flex justify-between">
-                      <span className="text-[var(--color-ink-soft)]">{reason}</span>
-                      <span>{n}</span>
-                    </li>
-                  ))}
-                </ul>
-              </Panel>
-            ) : null}
-
-            {result.trades.length > 0 ? (
-              <Panel title="Simulated trades" index="04">
-                <ul className="tabular divide-y divide-[var(--color-rule)] text-[11px]">
-                  {result.trades.slice(0, 25).map((t, i) => (
-                    <li key={i} className="flex flex-wrap justify-between gap-2 py-1.5">
-                      <span>
-                        {t.side === 1 ? "BUY" : "SELL"} · {t.reason}
+        {/* ------------------------------------------------------ the result
+            Paper underneath the lattice so that when the result column is
+            shorter than the form, the leftover reads as page rather than as a
+            slab of rule colour. */}
+        <div className="bg-[var(--color-paper)]">
+          <div className="grid content-start gap-px bg-[var(--color-rule)] sm:grid-cols-2">
+            {!result ? (
+              <div className="bg-[var(--color-paper)] sm:col-span-2">
+                <Gate title="Nothing simulated yet">
+                  Set at least one rule and run it. The return over the window,
+                  the trades it would have taken and the decisions the limits
+                  refused all land here.
+                </Gate>
+              </div>
+            ) : (
+              <>
+                <Block prov="public" className="sm:col-span-2">
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                    <Prov tone="public">Exposed · public price history</Prov>
+                    {/* Coverage, always. A window labelled "1y" that ran over a
+                        month is exactly the quiet wrongness this page exists to
+                        avoid, so the truncation is stated where the number
+                        is. */}
+                    {ranOver ? (
+                      <span
+                        className="text-caption"
+                        style={{
+                          color: ranOver.short
+                            ? "var(--color-exposed)"
+                            : "var(--color-ink-soft)",
+                        }}
+                      >
+                        {ranOver.text}
                       </span>
-                      <span className="text-[var(--color-ink-soft)]">
-                        ${t.price.toFixed(2)} · in {t.amountIn.toFixed(4)} · out{" "}
-                        {t.amountOut.toFixed(4)} ·{" "}
-                        {new Date(t.t * 1000).toLocaleDateString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                {result.trades.length > 25 ? (
-                  <p className="mt-2 text-[11px] text-[var(--color-ink-soft)]">
-                    Showing 25 of {result.trades.length}.
-                  </p>
+                    ) : null}
+                  </div>
+
+                  <Stat
+                    figure
+                    label="Simulated return"
+                    value={pct(result.returnPct)}
+                    tone={result.returnPct >= 0 ? "pos" : "neg"}
+                    sub={`Buy and hold over the same window: ${pct(result.holdReturnPct)}`}
+                  />
+                </Block>
+
+                <Block>
+                  <Stat
+                    label="Starting value"
+                    value={result.startValue.toFixed(2)}
+                  />
+                </Block>
+                <Block>
+                  <Stat label="Ending value" value={result.endValue.toFixed(2)} />
+                </Block>
+                <Block>
+                  <Stat
+                    label="Max drawdown"
+                    value={`-${result.maxDrawdownPct.toFixed(2)}%`}
+                  />
+                </Block>
+                <Block>
+                  <Stat label="Trades" value={result.trades.length} />
+                </Block>
+                <Block>
+                  <Stat
+                    label="Round trips"
+                    value={
+                      result.wins + result.losses === 0
+                        ? "none completed"
+                        : `${result.wins}W / ${result.losses}L`
+                    }
+                  />
+                </Block>
+                <Block>
+                  <Stat
+                    label="Decisions skipped"
+                    value={result.skipped.length}
+                  />
+                </Block>
+
+                {result.trades.length === 0 ? (
+                  <Block className="sm:col-span-2">
+                    <p className="max-w-[62ch] text-body text-[var(--color-ink-soft)]">
+                      The rules never fired over this window. That is a real
+                      result, not an error — the price never crossed a
+                      threshold, or every decision was refused by the limits.
+                    </p>
+                  </Block>
                 ) : null}
-              </Panel>
-            ) : null}
+
+                {result.equity.length > 1 ? (
+                  <Block className="sm:col-span-2">
+                    <BlockHead
+                      eyebrow="02"
+                      title="Simulated equity"
+                      hint="Account value in quote units across the window above."
+                    />
+                    <Chart
+                      points={result.equity.map((e) => ({
+                        t: e.t,
+                        price: e.value,
+                      }))}
+                      height={220}
+                    />
+                  </Block>
+                ) : null}
+
+                {result.trades.length > 0 ? (
+                  <Block className="sm:col-span-2">
+                    <BlockHead
+                      eyebrow="03"
+                      title="Simulated trades"
+                      hint={`${result.trades.length} fill${
+                        result.trades.length === 1 ? "" : "s"
+                      } the rules would have taken.`}
+                    />
+                    <div className="-mx-1 overflow-x-auto px-1">
+                      <table className="tabular w-full text-caption">
+                        <thead>
+                          <tr className="u-label text-[var(--color-ink-faint)]">
+                            <th className="pb-3 text-left font-medium">Side</th>
+                            <th className="pb-3 text-left font-medium">
+                              Reason
+                            </th>
+                            <th className="pb-3 text-right font-medium">
+                              Price
+                            </th>
+                            <th className="pb-3 text-right font-medium">In</th>
+                            <th className="pb-3 text-right font-medium">Out</th>
+                            <th className="pb-3 text-right font-medium">Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.trades.slice(0, 25).map((t, i) => (
+                            <tr
+                              key={i}
+                              className="border-t border-[var(--color-rule)]"
+                            >
+                              {/* Deliberately not coloured. `pos` and `neg`
+                                  mean a number moved up or down; a buy is not
+                                  an up. */}
+                              <td className="py-2.5 pr-4">
+                                {t.side === 1 ? "BUY" : "SELL"}
+                              </td>
+                              <td className="py-2.5 pr-4 text-[var(--color-ink-soft)]">
+                                {t.reason}
+                              </td>
+                              <td className="py-2.5 pl-4 text-right">
+                                ${t.price.toFixed(2)}
+                              </td>
+                              <td className="py-2.5 pl-4 text-right text-[var(--color-ink-soft)]">
+                                {t.amountIn.toFixed(4)}
+                              </td>
+                              <td className="py-2.5 pl-4 text-right text-[var(--color-ink-soft)]">
+                                {t.amountOut.toFixed(4)}
+                              </td>
+                              <td className="py-2.5 pl-4 text-right text-[var(--color-ink-soft)]">
+                                {new Date(t.t * 1000).toLocaleDateString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {result.trades.length > 25 ? (
+                      <p className="mt-4 text-caption text-[var(--color-ink-soft)]">
+                        Showing 25 of {result.trades.length}.
+                      </p>
+                    ) : null}
+                  </Block>
+                ) : null}
+
+                {result.skipped.length > 0 ? (
+                  <Block className="sm:col-span-2">
+                    <BlockHead
+                      eyebrow="04"
+                      title="Decisions the limits refused"
+                    />
+                    <p className="mb-6 max-w-[62ch] text-body text-[var(--color-ink-soft)]">
+                      The strategy wanted to act and the vault&rsquo;s own rules
+                      said no. These are counted because a backtest that
+                      silently drops them overstates how often the strategy
+                      would have traded.
+                    </p>
+                    <div>
+                      {Object.entries(
+                        result.skipped.reduce<Record<string, number>>(
+                          (acc, s) => {
+                            acc[s.reason] = (acc[s.reason] ?? 0) + 1;
+                            return acc;
+                          },
+                          {}
+                        )
+                      ).map(([reason, n]) => (
+                        <Row key={reason} label={reason} value={n} />
+                      ))}
+                    </div>
+                  </Block>
+                ) : null}
+              </>
+            )}
           </div>
-        ) : null}
-      </div>
-    </main>
+        </div>
+      </Reveal>
+    </>
   );
 }
