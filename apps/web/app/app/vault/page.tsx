@@ -143,7 +143,7 @@ export default function VaultSettings() {
         }
       />
 
-      <Reveal as="div" className="ledger lg:grid-cols-2">
+      <Reveal as="div" className="ledger-packed">
         {/* The alert lives in the lattice rather than above it, so its exit
             leaves no dead margin behind. */}
         <div className="lg:col-span-2">

@@ -269,6 +269,25 @@ export default function Overview() {
                 <div className="u-label mt-4">
                   Connect a wallet to read this vault
                 </div>
+                {/* The masthead's left cell held one label and a dash, so a
+                    visitor with no wallet got six hundred pixels of empty band
+                    as the first thing on the page. These are the three facts
+                    the vault page proves at length, stated once, up top. */}
+                <dl className="mt-8 grid max-w-[46rem] gap-px bg-[var(--color-void)] sm:grid-cols-3">
+                  {[
+                    ["Withdrawals", "To your address only", "The destination is derived, never chosen."],
+                    ["Your thresholds", "Encrypted to the cluster", "No single node holds a whole number."],
+                    ["Your trades", "Public on Solana", "Readable by anyone, like any other trade."],
+                  ].map(([k, v, note]) => (
+                    <div key={k} className="bg-[var(--color-card)] px-5 py-4">
+                      <dt className="u-label">{k}</dt>
+                      <dd className="mt-2 text-[15px] font-medium">{v}</dd>
+                      <dd className="mt-1 text-caption text-[var(--color-ink-soft)]">
+                        {note}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
               </>
             )}
 
