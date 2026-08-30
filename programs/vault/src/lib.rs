@@ -18,7 +18,7 @@
 //!   * `withdraw`'s destination is derived from `vault_config.owner`, never
 //!     passed in. A destination parameter is a rug waiting for a bug.
 //!
-//! See ARCHITECTURE.md §4 and THREAT_MODEL.md T-1..T-6.
+//! See ARCHITECTURE.md §4 and SECURITY.md T-1..T-6.
 
 use anchor_lang::prelude::*;
 use anchor_spl::{
@@ -268,7 +268,7 @@ pub mod vault {
     /// Move tokens from the vault back to the owner.
     ///
     /// Deliberately ignores `status`. A paused, stopped, or otherwise broken
-    /// vault must still let its owner out — see THREAT_MODEL.md T-4 and §8.1.
+    /// vault must still let its owner out — see SECURITY.md T-4 and §8.1.
     /// Touches no Arcium account, so this keeps working if the MPC network,
     /// our backend, and our executor are all unavailable.
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
@@ -785,6 +785,27 @@ pub mod vault {
 
         let price = read_sol_usd_price(&ctx.accounts.price_update)?;
 
+        // Record the price this decision is being made at.
+        //
+        // `execute_trade` bounds how far the market may have moved between the
+        // decision and the fill, and it reads that reference from
+        // `intent.oracle_price`. The callback cannot supply it: it receives only
+        // the computation's output and has no Pyth account, so the only place
+        // the decision price is known is here, where it is read and handed to
+        // the circuit.
+        //
+        // Until this line existed the callback wrote a zero and the band check
+        // was gated on `oracle_price > 0`, so `max_oracle_deviation_bps` never
+        // fired in production — a settable, range-checked, documented number
+        // that was not a control. The check was written; nothing reached it.
+        //
+        // Honest limitation: if two evaluations are in flight for one vault at
+        // once, the second overwrites this before the first callback lands, so
+        // the band is measured against the newer of two recent prices. Both are
+        // fresh on-chain reads and the window is bounded by INTENT_TTL_SLOTS, so
+        // this is a small loss of precision rather than a bypass.
+        ctx.accounts.trade_intent.oracle_price = price.price;
+
         // Read from the vault's own accounts rather than trusting arguments.
         // Both balances, because a buy spends quote and a sell spends base —
         // the circuit must size each against the balance it will actually debit.
@@ -885,7 +906,10 @@ pub mod vault {
         intent.expires_at_slot = clock.slot.saturating_add(INTENT_TTL_SLOTS);
         intent.vault_nonce = vault.nonce;
         intent.strategy_version = ctx.accounts.strategy_state.mxe_version;
-        intent.oracle_price = 0;
+        // `oracle_price` is deliberately NOT reset here. It was stashed by
+        // `evaluate_strategy` at the moment the decision was made, and it is the
+        // reference `execute_trade` measures its deviation band against. Zeroing
+        // it here is what made that band inert.
         intent.consumed = false;
 
         emit!(TradeAuthorized {
@@ -1609,7 +1633,7 @@ mod pin_tests {
     /// not prove the call site: no test in this repo detects the removal of the
     /// `require!` in either callback, for the reasons written above
     /// `derives the pinned cluster` in tests/trade-authorization.ts. Graded
-    /// CODED rather than ENFORCED in SECURITY_AUDIT.md.
+    /// CODED rather than ENFORCED in SECURITY.md.
     #[test]
     fn pins_the_expected_cluster() {
         let derived = expected_cluster();
