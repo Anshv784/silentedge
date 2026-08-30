@@ -17,6 +17,7 @@ import {
   Row,
 } from "@/components/ui";
 import { useVaultStore, type Limits } from "@/lib/vault-store";
+import { DEFAULT_LIMITS } from "@/lib/vault-program";
 import { VAULT_SEED } from "@silentedge/config";
 
 const FIELDS: [keyof Limits, string, number, number, number][] = [
@@ -106,52 +107,32 @@ const CONNECT_44 =
 export default function VaultSettings() {
   const s = useVaultStore();
   const [editing, setEditing] = useState(false);
+  /* With no wallet there is no vault to read. Showing the program's own
+     defaults beats a column of dashes, as long as the label says which. */
+  const L = s.limits ?? DEFAULT_LIMITS;
   const [listName, setListName] = useState("");
 
-  if (!s.connected) {
-    return (
-      <>
-        <PageHead title="Vault" />
-        <div className="mx-auto max-w-xl pt-12">
-          <Gate
-            title="Connect a wallet"
-            prov="public"
-            action={
-              <div className={CONNECT_44}>
-                <WalletButton />
-              </div>
-            }
-          >
-            Vault settings are read from the chain for the connected address.
-          </Gate>
-        </div>
-      </>
-    );
-  }
-
-  if (!s.vaultStatus) {
-    return (
-      <>
-        <PageHead title="Vault" />
-        <div className="mx-auto max-w-xl pt-12">
-          <Gate
-            title="No vault yet"
-            prov="public"
-            action={
-              <Link href="/app" className="btn btn-lg btn-primary">
-                Create one on the overview
-              </Link>
-            }
-          >
-            Settings appear once the account exists.
-          </Gate>
-        </div>
-      </>
-    );
-  }
+  /* No full-page gate.
+     This page used to return a small "connect a wallet" box for the whole
+     route, which hid its best content: the visibility classification below
+     needs no wallet, no vault and no chain read — it is what this product is
+     for, explained. The limits fall back to the program's compiled defaults,
+     and only the two blocks that WRITE to the chain are gated, in place. */
 
   return (
     <>
+      {!s.connected ? (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-[14px] border-[3px] border-[var(--color-stroke)] px-5 py-4">
+          <p className="max-w-[62ch] text-caption text-[var(--color-text-2)]">
+            Everything below is readable without a wallet. Connect one to see
+            this vault&rsquo;s own limits and to change anything.
+          </p>
+          <div className={CONNECT_44}>
+            <WalletButton />
+          </div>
+        </div>
+      ) : null}
+
       <PageHead
         title="Vault"
         subtitle="Limits, status and what is visible"
@@ -184,22 +165,18 @@ export default function VaultSettings() {
         {/* -------------------------------------------------- risk limits */}
         <Block prov="public">
           <BlockHead
+            eyebrow={s.limits ? "On chain · this vault" : "Program defaults · connect to read yours"}
             title="Risk limits"
-            eyebrow="On chain"
             hint="Enforced by the program, not by this page."
             right={
-              !editing ? (
+              s.limits && !editing ? (
                 <button className="btn btn-ghost" onClick={() => setEditing(true)}>
                   Edit
                 </button>
               ) : null
             }
           />
-          {!s.limits ? (
-            <p className="text-caption text-[var(--color-ink-soft)]">
-              Reading limits…
-            </p>
-          ) : editing ? (
+          {editing ? (
             <form
               className="grid grid-cols-2 gap-4"
               onSubmit={async (e) => {
@@ -255,23 +232,23 @@ export default function VaultSettings() {
             <div>
               <Row
                 label="Trade size"
-                value={`${s.limits.sizeBps / 100}% of the spendable balance`}
+                value={`${L.sizeBps / 100}% of the spendable balance`}
               />
               <Row
                 label="Max per trade"
-                value={`${s.limits.maxTradeBps / 100}%`}
+                value={`${L.maxTradeBps / 100}%`}
                 hint="entries only"
               />
-              <Row label="Max slippage" value={`${s.limits.maxSlippageBps / 100}%`} />
+              <Row label="Max slippage" value={`${L.maxSlippageBps / 100}%`} />
               <Row
                 label="Cooldown"
-                value={`${s.limits.cooldownSeconds}s`}
+                value={`${L.cooldownSeconds}s`}
                 hint="between entries"
               />
-              <Row label="Max price age" value={`${s.limits.maxOracleStalenessSec}s`} />
+              <Row label="Max price age" value={`${L.maxOracleStalenessSec}s`} />
               <Row
                 label="Max price uncertainty"
-                value={`${s.limits.maxConfBps / 100}%`}
+                value={`${L.maxConfBps / 100}%`}
               />
             </div>
           )}
@@ -292,6 +269,14 @@ export default function VaultSettings() {
             eyebrow="On chain"
             hint="Owner-only, and unable to trap funds: withdraw never reads status."
           />
+          {!s.connected || !s.vaultStatus ? (
+            <p className="text-caption text-[var(--color-text-2)]">
+              Pausing and stopping are owner-only, so they need a connected
+              wallet with a vault. Neither can trap funds: <code>withdraw</code>{" "}
+              never reads status.
+            </p>
+          ) : null}
+          {s.vaultStatus ? (
           <div className="flex flex-wrap gap-2">
             {s.vaultStatus === "active" ? (
               <button
@@ -321,6 +306,7 @@ export default function VaultSettings() {
               </button>
             ) : null}
           </div>
+          ) : null}
           <p className="mt-5 text-caption text-[var(--color-ink-soft)]">
             Withdrawals keep working in every state — pausing can never trap your
             funds. Stopping is permanent: the vault can never trade again.
@@ -357,8 +343,14 @@ export default function VaultSettings() {
               ) : null
             }
           />
-          {!s.listing ? (
-            <p className="text-caption text-[var(--color-ink-soft)]">Reading…</p>
+          {!s.connected ? (
+            <p className="text-caption text-[var(--color-text-2)]">
+              Listing is a write to your own vault account, so it needs a
+              connected wallet. It is off by default, and turning it on changes
+              what is findable — never what is readable.
+            </p>
+          ) : !s.listing ? (
+            <p className="text-caption text-[var(--color-text-2)]">Reading…</p>
           ) : s.listing.listed ? (
             <>
               <p className="max-w-[58ch]">
