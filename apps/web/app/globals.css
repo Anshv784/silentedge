@@ -388,51 +388,18 @@ samp,
   opacity: 1;
 }
 
-/* THE CURSOR RING.
-   Trails the pointer with a shorter spring than the light, so the two separate
-   slightly on a fast move and snap back together when it stops. Additive — the
-   real cursor is never hidden, because replacing it is how a playful site
-   becomes an unusable one. */
-.cursor-ring {
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 60;
-  width: 30px;
-  height: 30px;
-  margin: -15px 0 0 -15px;
-  pointer-events: none;
-  border: 2px solid color-mix(in srgb, var(--color-lime) 70%, transparent);
-  border-radius: 50%;
-  transform: translate3d(var(--rx2, -999px), var(--ry2, -999px), 0) scale(var(--rs, 1));
-  will-change: transform;
-  opacity: 0;
-  transition:
-    opacity 260ms var(--ease-swap),
-    border-color 160ms var(--ease-swap);
-}
-.cursor-ring[data-on="1"] {
-  opacity: 1;
-}
-/* Over anything clickable it swells and switches to the cyan. */
-.cursor-ring[data-hot="1"] {
-  border-color: color-mix(in srgb, var(--color-cyan) 85%, transparent);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .ground::before,
   .ground::after {
     animation: none;
   }
-  .cursor-light,
-  .cursor-ring {
+  .cursor-light {
     display: none;
   }
 }
 /* Coarse pointers have no cursor to decorate. */
 @media (pointer: coarse) {
-  .cursor-light,
-  .cursor-ring {
+  .cursor-light {
     display: none;
   }
 }
