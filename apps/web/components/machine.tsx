@@ -38,6 +38,11 @@ const BEATS = [
   },
 ];
 
+/** What each node is shown holding. Nonsense by construction — no single node
+ *  holds a whole number, and the point of the beat is that these are useless
+ *  on their own. Fixed so they survive hydration and never imply live data. */
+const SHARES = ["c1·7e", "0a·b4", "94·2f", "e6·38", "5d·d1"];
+
 /** The five node positions, as percentages of the stage. */
 const NODES = [
   { x: 12, y: 18 },
@@ -102,6 +107,12 @@ export function Machine({ price }: { price: number | null }) {
                       ? "—"
                       : Math.round(price * (label === "BUY" ? 0.96 : label === "SELL" ? 1.06 : 0.9))}
                   </span>
+                  {/* Per card, because "buy under / sell over / stop below"
+                      sitting once in the caption made three numbered cards
+                      read as three of the same thing. */}
+                  <span className="mono text-[9px] tracking-[0.1em] text-[var(--color-text-3)]">
+                    {label === "BUY" ? "UNDER" : label === "SELL" ? "OVER" : "BELOW"}
+                  </span>
                 </div>
                 {/* back — sealed */}
                 <div
@@ -130,17 +141,56 @@ export function Machine({ price }: { price: number | null }) {
           style={{ opacity: beat === 1 ? 1 : 0 }}
           aria-hidden
         >
+          {/* The links, drawn once as one static SVG. Five loose dots on a
+              large stage read as an empty box; the same five wired to a centre
+              read as a cluster, which is the whole point of the beat. */}
+          <svg
+            className="absolute inset-0 h-full w-full"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+          >
+            {NODES.map((n, i) => (
+              <line
+                key={i}
+                x1="50"
+                y1="50"
+                x2={n.x + 2}
+                y2={n.y + 2}
+                stroke="var(--color-stroke)"
+                strokeWidth="0.4"
+                strokeDasharray="2 2"
+              />
+            ))}
+          </svg>
           {NODES.map((n, i) => (
-            <span
-              key={i}
-              className="absolute h-4 w-4 rounded-full border-2"
-              style={{
-                left: `${n.x}%`,
-                top: `${n.y}%`,
-                borderColor: "var(--color-stroke)",
-                background: "var(--color-deep)",
-              }}
-            />
+            /* Dot and label are positioned separately, not stacked. Stacked and
+               centred together, a 44px shard arriving on the node covered the
+               label — which is the one part of this beat that carries the
+               claim. The dot sits on the point; the label hangs below it. */
+            <span key={i}>
+              <span
+                className="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
+                style={{
+                  left: `${n.x + 2}%`,
+                  top: `${n.y + 2}%`,
+                  borderColor: "var(--color-magenta)",
+                  background: "var(--color-deep)",
+                }}
+              />
+              {/* Each node's share. Fixed strings, not random: a value that
+                  changed every render would be a lie about a computation that
+                  is not running, and would break hydration. They are nonsense
+                  on purpose — that IS the claim being illustrated. */}
+              <span
+                className="mono absolute -translate-x-1/2 text-[8px] tracking-[0.08em] text-[var(--color-text-3)]"
+                style={{
+                  left: `${n.x + 2}%`,
+                  top: `calc(${n.y + 2}% + 26px)`,
+                }}
+              >
+                {SHARES[i]}
+              </span>
+            </span>
           ))}
           {[0, 1, 2].map((i) => (
             /* Two nested elements on purpose. `orbit` animates `transform`, so
@@ -150,13 +200,17 @@ export function Machine({ price }: { price: number | null }) {
                orbits. */
             <span
               key={i}
-              className="absolute left-1/2 top-1/2 h-11 w-11 -translate-x-1/2 -translate-y-1/2"
+              className="absolute h-9 w-9"
               style={{
-                transform:
-                  beat === 1
-                    ? `translate(calc(-50% + ${(NODES[i].x - 50) * 3.4}px), calc(-50% + ${(NODES[i].y - 50) * 2.7}px))`
-                    : "translate(-50%, -50%) scale(.35)",
-                transition: `transform 340ms var(--ease-arrive) ${i * 80}ms`,
+                /* Percentages, matching NODES, so a shard actually arrives AT
+                   the node it belongs to. The old version travelled a px
+                   offset scaled off the same numbers, which drifts with the
+                   stage width — the shards landed near nothing and the beat
+                   read as three tiles floating in a box. */
+                left: beat === 1 ? `${NODES[i].x + 2}%` : "50%",
+                top: beat === 1 ? `${NODES[i].y + 2}%` : "50%",
+                transform: `translate(-50%, -50%) scale(${beat === 1 ? 1 : 0.35})`,
+                transition: `left 340ms var(--ease-arrive) ${i * 80}ms, top 340ms var(--ease-arrive) ${i * 80}ms, transform 340ms var(--ease-arrive) ${i * 80}ms`,
               }}
             >
               <span
@@ -196,6 +250,21 @@ export function Machine({ price }: { price: number | null }) {
             <span className="text-[26px] font-extrabold text-[var(--color-text)]">
               BUY
             </span>
+          </div>
+          {/* The checks that actually gate a fill. This beat used to be one
+              pill and one price on a large stage, which said "a decision came
+              out" and nothing about what had to be true first — and that gate
+              is most of what the program is. Every row here is a real check in
+              the deployed program; see the guardrails table on /app/strategy. */}
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+            {["oracle 4s old", "size 10% ≤ cap", "slippage ≤ 0.5%"].map((c) => (
+              <span
+                key={c}
+                className="mono text-[10px] tracking-[0.08em] text-[var(--color-text-3)]"
+              >
+                <span style={{ color: "var(--color-lime)" }}>✓</span> {c}
+              </span>
+            ))}
           </div>
           <div className="flex items-center gap-2">
             <span className="chip chip-cyan">ON CHAIN</span>

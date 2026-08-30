@@ -1,5 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" fill="#10161c"/>
-  <rect x="7" y="14" width="18" height="11" fill="none" stroke="#eef1f4" stroke-width="2"/>
-  <path d="M11 14v-4a5 5 0 0 1 10 0v4" fill="none" stroke="#0f6b5c" stroke-width="2"/>
+  <!-- The same mark as the sidebar Brand, at favicon scale: lime tile, dark S.
+       The old icon was a padlock in teal on #10161c, from the palette this
+       identity replaced, so a tab showed one brand and the page another.
+       Colours are literal because a favicon has no access to the theme. -->
+  <rect width="32" height="32" rx="8" fill="#c6ff4f"/>
+  <path
+    d="M9.6 20.2c1.44 1.28 3.2 1.92 5.44 1.92 3.04 0 4.8-1.28 4.8-3.2 0-1.76-1.28-2.56-4.16-3.2l-1.6-.32c-2.88-.64-4.32-2.08-4.32-4.32 0-2.72 2.24-4.48 5.76-4.48 2.08 0 3.84.48 5.12 1.6"
+    stroke="#0d1206" stroke-width="2.6" stroke-linecap="round" fill="none"/>
 </svg>
