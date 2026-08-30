@@ -43,7 +43,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${display.variable} ${mono.variable}`}>
       <body>
-        <div className="ground" aria-hidden />
+        <div className="ground" aria-hidden>
+          <div className="ground__grid" />
+        </div>
         {children}
       </body>
     </html>
