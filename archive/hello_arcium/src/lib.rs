@@ -30,7 +30,16 @@ const COMP_DEF_OFFSET_EXPORT_STRATEGY: u32 = comp_def_offset("export_strategy");
 const COMP_DEF_OFFSET_EVALUATE_STRATEGY: u32 = comp_def_offset("evaluate_strategy");
 
 /// Four encrypted scalars: entry_below, exit_above, stop_below, size_bps.
-pub const STRATEGY_FIELDS: usize = 4;
+/// Three, not four.
+///
+/// This was 4 from when `size_bps` was encrypted alongside the thresholds. The
+/// live circuit's `Strategy` (encrypted-ixs/src/lib.rs) carries exactly three
+/// fields — entry, exit, stop — because the trade size is deliberately public
+/// (SECURITY.md T-38: one trade recovers it exactly, so encrypting it bought
+/// nothing and cost a field). The stale 4 made this program fail to compile,
+/// and because it is a workspace member that broke `arcium build` for the
+/// whole repo, not just for itself.
+pub const STRATEGY_FIELDS: usize = 3;
 pub const STORED_STRATEGY_SEED: &[u8] = b"stored_strategy";
 
 declare_id!("FPZkMe1NgT3oug3iLoaWsnPjGAEr3p7mwporhfVqU7Lk");

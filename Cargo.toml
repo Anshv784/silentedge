@@ -1,4 +1,8 @@
 [workspace]
+# `archive/` is deliberately NOT a member. See archive/hello_arcium/README.md:
+# it drives circuits that were superseded by the _v2/_v3 versions, so it no
+# longer compiles, and while it was a workspace member that broke `arcium build`
+# for the entire repository rather than just for itself.
 members = ["programs/*", "encrypted-ixs"]
 resolver = "2"
 

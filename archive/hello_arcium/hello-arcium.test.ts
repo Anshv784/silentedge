@@ -11,7 +11,7 @@
  *
  * Requires a running cluster (`arcium localnet`, which needs Docker) or a
  * deployed MXE on devnet. Skipped otherwise rather than failing, so the rest of
- * the suite stays runnable without that dependency — see docs/arcium-hello-world.md.
+ * the suite stays runnable without that dependency — see docs/arcium.md.
  */
 
 // Anchor 1.x ships a different TS client (@anchor-lang/core) from the 0.x line
