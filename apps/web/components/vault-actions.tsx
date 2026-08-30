@@ -33,13 +33,8 @@ const ASSETS: Asset[] = [
   { mint: BASE_MINT, symbol: BASE_SYMBOL, decimals: BASE_DECIMALS },
 ];
 
-const inputClass =
-  "tabular w-full border border-[var(--color-rule)] bg-white px-3 py-2 text-[14px] " +
-  "placeholder:text-[var(--color-ink-soft)] focus:border-[var(--color-signal)] focus:outline-none";
-
-const buttonClass =
-  "border border-[var(--color-signal)] bg-[var(--color-signal)] px-4 py-2 text-[13px] text-white " +
-  "transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40";
+const inputClass = "field tabular";
+const buttonClass = "btn btn-primary";
 
 export function CreateVault({
   owner,
@@ -68,16 +63,15 @@ export function CreateVault({
 
   return (
     <div className="border-t border-[var(--color-rule)] px-5 py-6 text-center">
-      <p className="mb-1 text-[13px]">No vault at this address yet.</p>
-      <p className="mx-auto mb-4 max-w-xs text-[11px] leading-relaxed text-[var(--color-ink-soft)]">
+      <p className="mx-auto mb-4 max-w-xs text-[12px] leading-relaxed text-[var(--color-ink-soft)]">
         Creating one is a single transaction. The vault is controlled by the
         program, and only your address can withdraw from it.
       </p>
-      <button className={buttonClass} onClick={run} disabled={busy}>
+      <button className="btn btn-primary btn-lg w-full" onClick={run} disabled={busy}>
         {busy ? "Confirm in your wallet…" : "Create vault"}
       </button>
       {error ? (
-        <p role="alert" className="mt-3 text-[12px] text-[var(--color-exposed)]">
+        <p role="alert" className="mt-3 text-[12px] text-[var(--color-neg)]">
           {error}
         </p>
       ) : null}
@@ -139,14 +133,14 @@ export function Transfer({
       <div className="mb-2 flex items-baseline justify-between">
         <label
           htmlFor={`${direction}-amount`}
-          className="text-[10px] uppercase tracking-[0.14em] text-[var(--color-ink-soft)]"
+          className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--color-ink-faint)]"
         >
           {isDeposit ? "Deposit" : "Withdraw"}
         </label>
         <button
           type="button"
           onClick={() => setValue(max > 0 ? String(max) : "")}
-          className="tabular text-[11px] text-[var(--color-ink-soft)] underline underline-offset-2"
+          className="tabular text-[11px] text-[var(--color-ink-soft)] underline underline-offset-2 transition-colors hover:text-[var(--color-ink)]"
         >
           {max.toLocaleString(undefined, { maximumFractionDigits: 4 })} available
         </button>
@@ -182,7 +176,7 @@ export function Transfer({
             ))}
           </select>
         ) : (
-          <span className="tabular flex items-center border border-[var(--color-rule)] bg-[var(--color-paper)] px-3 text-[13px] text-[var(--color-ink-soft)]">
+          <span className="tabular flex items-center rounded-md border border-[var(--color-rule-strong)] px-3 text-[12px] text-[var(--color-ink-faint)]">
             {asset.symbol}
           </span>
         )}
@@ -196,18 +190,18 @@ export function Transfer({
       </div>
 
       {value !== "" && parsed === null ? (
-        <p className="mt-2 text-[11px] text-[var(--color-exposed)]">
+        <p className="mt-2 text-[11px] text-[var(--color-neg)]">
           Enter an amount above zero, with at most {asset.decimals} decimal
           places.
         </p>
       ) : null}
       {overBalance ? (
-        <p className="mt-2 text-[11px] text-[var(--color-exposed)]">
+        <p className="mt-2 text-[11px] text-[var(--color-neg)]">
           That is more than the {max.toLocaleString()} {asset.symbol} available.
         </p>
       ) : null}
       {error ? (
-        <p role="alert" className="mt-2 text-[11px] text-[var(--color-exposed)]">
+        <p role="alert" className="mt-2 text-[11px] text-[var(--color-neg)]">
           {error}
         </p>
       ) : null}

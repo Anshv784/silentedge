@@ -1,96 +1,742 @@
 @import "tailwindcss";
 
-/*
- * Instrument-panel palette.
- *
- * Cool paper rather than warm cream, ink rather than pure black. The two
- * semantic accents are load-bearing, not decorative: `exposed` marks anything
- * a stranger can read on-chain, `shielded` marks anything that stays private.
- * Nothing else in the UI is allowed to use them.
- */
-@theme {
-  --color-paper: #eef1f4;
-  --color-panel: #f8fafb;
-  --color-ink: #10161c;
-  --color-ink-soft: #5a6672;
-  --color-rule: #cfd6dd;
-  --color-signal: #1b3fa8;
-  --color-exposed: #9a6212;
-  --color-shielded: #0f6b5c;
+/* ============================================================================
+   SilentEdge — ONE identity. No switcher, no [data-theme], no bootstrap script.
 
-  --font-display: var(--font-space-grotesk), ui-sans-serif, system-ui;
+   Deleted with this file: five theme blocks, components/theme.tsx, the
+   render-blocking THEME_BOOTSTRAP inline script, the data-theme attribute and
+   suppressHydrationWarning on <html>. That script ran before first paint on
+   every load; removing it is worth more to perceived speed than any bundle
+   arithmetic.
+
+   Every contrast figure below was computed, not estimated.
+
+   Two colour meanings are load-bearing and may never swap:
+     cyan    PUBLIC  — a stranger can read this on chain
+     magenta HIDDEN  — never leaves the computation
+   A value the page has not loaded is amber UNKNOWN. Never magenta. Never zero.
+   HIDDEN never renders as legible digits — always a padlock pill. The moment
+   one does, the colour grammar stops meaning anything.
+   ========================================================================= */
+
+@theme {
+  /* --- SURFACES. A 4-step depth ramp; --stroke is a 3px structural border,
+         not text, so it is graded for visibility (2.21:1 on card) not AA. --- */
+  --color-void: #0b0620;
+  --color-deep: #150b33;
+  --color-card: #1e1147;
+  --color-card-hi: #2a1a63;
+  --color-stroke: #5638be; /* 2.21:1 on card, 2.55:1 on void */
+
+  /* --- INK. Three tiers. Every tier clears AA on card-hi, the lightest
+         surface, so no tier can be misused. --- */
+  --color-text: #fff6fb; /* void 18.68 / card 16.17 / card-hi 13.90 */
+  --color-text-2: #b9a9e8; /* void  9.33 / card  8.08 / card-hi  6.94 */
+  --color-text-3: #9a8ad6; /* void  6.58 / card  5.69 / card-hi  4.89 */
+
+  /* --- THE ONE ACTION. Fill only, never body text. --- */
+  --color-lime: #c6ff4f; /* void on lime = 16.79:1 */
+  --color-on-lime: #0b0620;
+  --color-lime-deep: #7fa82b; /* the pressed shadow under a lime button */
+
+  /* --- THE LOAD-BEARING PAIR. --- */
+  --color-cyan: #34e7f5; /* PUBLIC.  void 13.09 / card-hi 9.74 */
+  --color-magenta: #ff4fd8; /* HIDDEN.  void  6.94 / card-hi 5.16 */
+  --color-amber: #ffb020; /* UNKNOWN + caution + asterisk. void 10.82 */
+
+  /* --- DIRECTION ON A NUMBER. Only ever this, only next to a triangle. --- */
+  --color-up: #2be08a; /* void 11.43 */
+  --color-down: #ff5470; /* void  6.36 */
+
+  /* --- TYPE. Seven steps. The page never uses an eighth. Weight, tracking and
+         line-height are bound to size so no component can invent one. --- */
+  --text-tag: 11px;
+  --text-tag--line-height: 1.3;
+  --text-tag--letter-spacing: 0.14em;
+  --text-tag--font-weight: 700;
+
+  --text-meta: 13px;
+  --text-meta--line-height: 1.45;
+  --text-meta--letter-spacing: 0.01em;
+  --text-meta--font-weight: 500;
+
+  --text-body: 17px;
+  --text-body--line-height: 1.45;
+  --text-body--letter-spacing: -0.005em;
+  --text-body--font-weight: 500;
+
+  --text-card: 22px;
+  --text-card--line-height: 1.15;
+  --text-card--letter-spacing: -0.02em;
+  --text-card--font-weight: 700;
+
+  --text-sec: clamp(30px, 4vw, 40px);
+  --text-sec--line-height: 1.05;
+  --text-sec--letter-spacing: -0.03em;
+  --text-sec--font-weight: 800;
+
+  --text-hero: clamp(38px, 5.4vw, 68px);
+  --text-hero--line-height: 0.92;
+  --text-hero--letter-spacing: -0.04em;
+  --text-hero--font-weight: 800;
+
+  --text-figure: clamp(44px, 6.4vw, 72px);
+  --text-figure--line-height: 0.9;
+  --text-figure--letter-spacing: -0.03em;
+  --text-figure--font-weight: 700;
+
+  /* --- SPACING. Three tiers. --- */
+  --space-1: 10px;
+  --space-2: 26px;
+  --space-3: 104px;
+
+  /* --- MOTION. Three easings plus linear. No fifth. --- */
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.15); /* overshoot = personality */
+  --ease-arrive: cubic-bezier(0.2, 0.9, 0.25, 1); /* reveals, tilts */
+  --ease-swap: cubic-bezier(0.7, 0, 0.3, 1); /* state + colour swaps */
+  /* linear is RESERVED for the four things measuring a real clock:
+     the marquee, the publish-age counter, the slot fuse, the seal wipe. */
+
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, monospace;
 }
 
-@layer base {
-  html {
-    background: var(--color-paper);
-    color: var(--color-ink);
-    -webkit-font-smoothing: antialiased;
+/* ---------------------------------------------------------------- shim --
+   Aliases from the previous token set onto this one.
+
+   The nine /app routes were written against `--color-ink`, `--color-rule`,
+   `--color-signal` and friends. Mapping them here re-skins every one of those
+   screens into the new palette in a single block, instead of a sweep across
+   nine files that would have to land all at once or leave the app half-styled.
+
+   These are a MIGRATION SHIM, not part of the design system. Nothing new may
+   use them, and the block is deleted once the app routes are rewritten.
+
+   The two load-bearing meanings are preserved across the mapping, which is the
+   only part that matters: `exposed` (readable on chain) lands on cyan, the new
+   PUBLIC colour, and `shielded` (never leaves the computation) lands on
+   magenta, the new HIDDEN colour. Reversing either would make every visibility
+   label on every app screen say the opposite of the truth.
+   ------------------------------------------------------------------------ */
+@theme {
+  --color-paper: var(--color-void);
+  --color-panel: var(--color-deep);
+  --color-raised: var(--color-card);
+  --color-hover: var(--color-card-hi);
+  --color-ink: var(--color-text);
+  --color-ink-soft: var(--color-text-2);
+  --color-ink-faint: var(--color-text-3);
+  --color-rule: var(--color-stroke);
+  --color-rule-strong: var(--color-stroke);
+  --color-signal: var(--color-lime);
+  --color-signal-hi: var(--color-lime);
+  --color-on-signal: var(--color-on-lime);
+  --color-signal-dim: color-mix(in srgb, var(--color-lime) 14%, var(--color-card));
+  --color-exposed: var(--color-cyan); /* PUBLIC — must stay cyan */
+  --color-shielded: var(--color-magenta); /* HIDDEN — must stay magenta */
+  --color-pos: var(--color-up);
+  --color-neg: var(--color-down);
+
+  --text-micro: var(--text-tag);
+  --text-caption: var(--text-meta);
+  --text-lead: var(--text-card);
+  --text-title: var(--text-sec);
+  --text-head: var(--text-sec);
+}
+
+@layer components {
+  /* Structural classes the app routes still reference. */
+  .u-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-tag);
+    letter-spacing: 0.14em;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--color-text-3);
   }
-  body {
-    font-family: var(--font-display);
+  .ledger {
+    display: grid;
+    gap: 3px;
+    background: var(--color-stroke);
+    border-block: 3px solid var(--color-stroke);
   }
-  /* Every figure and address is monospace: this is a readout, not prose. */
-  .tabular {
+  .block {
+    background: var(--color-card);
+    padding: var(--space-2);
+  }
+  .prov {
+    position: relative;
+    padding-left: 24px;
+  }
+  .prov::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    border-radius: 999px;
+    background: var(--prov, var(--color-stroke));
+  }
+  .prov-public {
+    --prov: var(--color-cyan);
+  }
+  .prov-private {
+    --prov: var(--color-magenta);
+  }
+  .prov-top {
+    border-top: 4px solid var(--prov, var(--color-stroke));
+  }
+  .redacted {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--color-magenta) 55%, transparent) 0 3px,
+      color-mix(in srgb, var(--color-magenta) 12%, transparent) 3px 11px
+    );
+    border-radius: 6px;
+    color: transparent;
+    user-select: none;
+  }
+  .unknown {
+    background-image: repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-amber) 40%, transparent) 0 2px,
+      transparent 2px 9px
+    );
+    border-radius: 6px;
+    color: transparent;
+    user-select: none;
+  }
+  .accent-surface {
+    background: color-mix(in srgb, var(--color-lime) 12%, var(--color-card));
+    border-left: 4px solid var(--color-lime);
+  }
+  .raised {
+    background: var(--color-card);
+    border: 3px solid var(--color-stroke);
+    border-radius: 22px;
+  }
+  .lit {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-lime) 45%, transparent);
+  }
+  .field-dots,
+  .bloom {
+    background: none;
+  }
+}
+
+/* Registered so the cursor tilt interpolates instead of snapping. */
+@property --rx {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+@property --ry {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+
+/* ------------------------------------------------------------------- base */
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background: var(--color-void);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: var(--text-body);
+  line-height: 1.45;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every figure, everywhere. A rolling odometer with proportional digits
+   jitters its own column width on every tick. */
+.tnum,
+code,
+kbd,
+samp,
+[data-num] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* The page ground. A fixed div, NOT background-attachment: fixed, which forces
+   a repaint of the whole viewport on every scroll frame on iOS. */
+.ground {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 90% at 50% -10%,
+    #2a1a63 0%,
+    #150b33 45%,
+    #0b0620 100%
+  );
+}
+
+/* Grain. One small tile, rasterized once at load, composited, never repainted.
+   Its real job is stopping the gradient above from banding. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.045;
+  mix-blend-mode: overlay;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
+}
+
+::selection {
+  background: var(--color-lime);
+  color: var(--color-on-lime);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-lime);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-void);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-stroke);
+  border: 3px solid var(--color-void);
+  border-radius: 999px;
+}
+
+/* --------------------------------------------------------------- objects */
+
+@layer components {
+  /* THE CHUNKY SLAB. Zero blur radius, so this is the cheapest possible way to
+     fake physical depth — a 0px-blur shadow is a solid rect fill, versus an
+     80px blur which is a real gaussian pass on every paint. Declared once,
+     never transitioned. */
+  .slab {
+    background: var(--color-card);
+    border: 3px solid var(--color-stroke);
+    border-radius: 22px;
+    box-shadow:
+      0 6px 0 0 var(--color-deep),
+      0 6px 0 3px var(--color-stroke);
+  }
+  .slab-hi {
+    background: var(--color-card-hi);
+  }
+  .slab-flat {
+    background: var(--color-card);
+    border: 3px solid var(--color-stroke);
+    border-radius: 22px;
+  }
+
+  /* THE BUTTON. Press is transform-only and the shadow collapses to zero —
+     a real physical button with no layout work. */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 15px 26px;
+    border: 3px solid var(--color-stroke);
+    border-radius: 18px;
+    font-size: var(--text-body);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    color: var(--color-text);
+    background: transparent;
+    box-shadow:
+      0 6px 0 0 var(--color-deep),
+      0 6px 0 3px var(--color-stroke);
+    transition:
+      transform 140ms var(--ease-arrive),
+      box-shadow 140ms var(--ease-arrive);
+  }
+  .btn:hover:not(:disabled) {
+    transform: translateY(-2px) scale(1.03);
+  }
+  .btn:active:not(:disabled) {
+    transform: translateY(6px) scale(0.99);
+    box-shadow:
+      0 0 0 0 var(--color-deep),
+      0 0 0 3px var(--color-stroke);
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--color-lime);
+    color: var(--color-on-lime);
+    border-color: var(--color-lime);
+    box-shadow:
+      0 6px 0 0 var(--color-lime-deep),
+      0 6px 0 3px var(--color-lime-deep);
+  }
+  .btn-primary:active:not(:disabled) {
+    box-shadow:
+      0 0 0 0 var(--color-lime-deep),
+      0 0 0 3px var(--color-lime-deep);
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--color-text);
+  }
+  .btn-sm {
+    padding: 9px 16px;
+    font-size: var(--text-meta);
+    border-radius: 13px;
+    border-width: 2px;
+    box-shadow:
+      0 4px 0 0 var(--color-deep),
+      0 4px 0 2px var(--color-stroke);
+  }
+  .btn-sm:active:not(:disabled) {
+    transform: translateY(4px) scale(0.99);
+    box-shadow:
+      0 0 0 0 var(--color-deep),
+      0 0 0 2px var(--color-stroke);
+  }
+
+  /* The form control, in the same physical register as the button. */
+  .field {
+    width: 100%;
+    padding: 13px 15px;
+    background: var(--color-void);
+    border: 3px solid var(--color-stroke);
+    border-radius: 14px;
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    font-size: var(--text-body);
+    font-variant-numeric: tabular-nums;
+    transition: border-color 140ms var(--ease-swap);
+  }
+  .field::placeholder {
+    color: var(--color-text-3);
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--color-lime);
+  }
+  .field:disabled {
+    opacity: 0.45;
+  }
+
+  /* CHIPS. Never a sentence. */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    border: 2px solid currentColor;
+    font-family: var(--font-mono);
+    font-size: var(--text-tag);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .chip-amber {
+    color: var(--color-amber);
+  }
+  .chip-cyan {
+    color: var(--color-cyan);
+  }
+  .chip-lime {
+    color: var(--color-lime);
+  }
+  .chip-magenta {
+    color: var(--color-magenta);
+  }
+
+  /* THE ASTERISK CHIP. Welded to the object making the claim, never deferred
+     to a footer. If you delete the claim you delete this with it, and if you
+     delete this the claim visibly loses its footing. */
+  .ast {
+    display: block;
+    margin-top: 10px;
+    padding-left: 12px;
+    border-left: 3px solid var(--color-amber);
+    color: var(--color-amber);
+    font-family: var(--font-mono);
+    font-size: var(--text-tag);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    line-height: 1.5;
+    text-transform: uppercase;
+  }
+
+  /* PUBLIC / HIDDEN / UNKNOWN. Colour is never the only channel. */
+  .pub {
+    color: var(--color-cyan);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-    font-feature-settings: "tnum";
   }
-  :focus-visible {
-    outline: 2px solid var(--color-signal);
-    outline-offset: 2px;
-  }
-}
-
-/* Hairline grid backdrop — a measuring surface, kept nearly subliminal. */
-.grid-field {
-  background-image: linear-gradient(
-      to right,
-      color-mix(in srgb, var(--color-rule) 45%, transparent) 1px,
-      transparent 1px
-    ),
-    linear-gradient(
-      to bottom,
-      color-mix(in srgb, var(--color-rule) 45%, transparent) 1px,
-      transparent 1px
+  .hid {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 12px 3px 9px;
+    border-radius: 999px;
+    background: var(--color-magenta);
+    color: var(--color-void);
+    font-family: var(--font-mono);
+    font-size: var(--text-tag);
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    /* the dot-matrix strip — the second, non-colour channel */
+    background-image: radial-gradient(
+      circle,
+      rgba(11, 6, 32, 0.55) 1px,
+      transparent 1.2px
     );
-  background-size: 28px 28px;
+    background-size: 5px 5px;
+  }
+  .unk {
+    color: var(--color-amber);
+    font-family: var(--font-mono);
+    font-size: var(--text-meta);
+    letter-spacing: 0.12em;
+  }
+  .up {
+    color: var(--color-up);
+  }
+  .down {
+    color: var(--color-down);
+  }
+
+  /* GLOW. Only on genuinely live elements, never more than three at once, and
+     animated by fading a separate layer's opacity — never by animating
+     box-shadow, which repaints. */
+  .glow {
+    position: relative;
+  }
+  .glow::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow:
+      0 0 0 3px rgba(52, 231, 245, 0.2),
+      0 0 30px -6px var(--color-cyan);
+    opacity: 0;
+    transition: opacity 240ms var(--ease-swap);
+  }
+  .glow[data-fresh="1"]::after {
+    opacity: 1;
+  }
+
+  /* THE 3D STAGE. One rAF-throttled pointermove writes --rx/--ry. */
+  .stage {
+    perspective: 1200px;
+  }
+  .rig {
+    transform-style: preserve-3d;
+    transform: rotateX(calc(8deg + var(--rx))) rotateY(calc(-11deg + var(--ry)));
+    transition: transform 140ms linear;
+  }
+  .stage:not(:hover) .rig {
+    transition: transform 520ms var(--ease-pop);
+  }
+
+  /* THE FROST. The landing's demo panel only — /app renders a padlock pill
+     instead, because a CSS blur is a visual effect and not encryption. */
+  .frost {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: rgba(255, 79, 216, 0.1);
+    clip-path: inset(0 100% 0 0);
+    transition: clip-path 320ms linear;
+  }
+  .frost[data-sealed="1"] {
+    clip-path: inset(0 0 0 0);
+  }
+  .frost-digits {
+    filter: blur(9px) contrast(0.85) saturate(1.4);
+    user-select: none;
+  }
 }
 
-/* The shielded readout: legible as *structure*, unreadable as *value*. */
-.redacted {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    color-mix(in srgb, var(--color-shielded) 22%, transparent) 0 5px,
-    transparent 5px 10px
-  );
-  color: transparent;
-  user-select: none;
+/* ------------------------------------------------------------------ loops */
+
+/* The marquee. transform only, on a duplicated list. */
+@keyframes rail {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
 }
+.rail-track {
+  display: flex;
+  width: max-content;
+  animation: rail 40s linear infinite;
+  will-change: transform;
+}
+.rail:hover .rail-track,
+.rail:focus-within .rail-track {
+  animation-play-state: paused;
+}
+
+/* The MPC shard orbit, beat 2. */
+@keyframes orbit {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, -7px, 0) rotate(180deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(360deg);
+  }
+}
+
+/* The confetti burst, one-shot, unmounted after 900ms. */
+@keyframes confetti {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(var(--cx), var(--cy), 0) rotate(var(--cr));
+    opacity: 0;
+  }
+}
+
+/* The LIVE dot. Breathes only while data is genuinely fresh. */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.live-dot[data-fresh="1"] {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+/* A one-shot pop, for the +1 badge and the SEALED stamp. */
+@keyframes pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  55% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.pop {
+  animation: pop 380ms var(--ease-pop) both;
+}
+
+/* Scroll reveals, CSS-only. No scroll listener anywhere on the landing. */
+@supports (animation-timeline: view()) {
+  .reveal {
+    animation: rise 320ms var(--ease-arrive) both;
+    animation-timeline: view();
+    animation-range: entry 8% cover 26%;
+  }
+}
+@supports not (animation-timeline: view()) {
+  .reveal {
+    animation: rise 320ms var(--ease-arrive) both;
+  }
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0);
+  }
+}
+
+/* Off-screen sections cost no layout and no paint. */
+.defer {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 900px;
+}
+
+/* -------------------------------------------------------- reduced motion */
 
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  .rail-track {
+    animation: none;
+    transform: none;
+  }
+  .rig {
+    transform: none;
+  }
+  /* The machine stops looping and becomes three tappable beats. Prices, ages
+     and the slot counter keep updating — that is information, not decoration,
+     and freezing it would be an accessibility regression, not an improvement. */
 }
 
-/* Wallet-adapter modal, restyled to match rather than ship its purple default. */
+/* Wallet-adapter modal, dragged into this register rather than shipping its
+   purple default. Its own stylesheet also @imports a Google font, which the
+   CSP blocks by design; the modal inherits our display face instead. */
 .wallet-adapter-button-trigger {
-  background: var(--color-signal) !important;
-  border-radius: 2px !important;
+  background: transparent !important;
+  border: 3px solid var(--color-stroke) !important;
+  border-radius: 13px !important;
   font-family: var(--font-display) !important;
-  font-size: 13px !important;
-  height: 38px !important;
-  letter-spacing: 0.02em;
+  font-size: var(--text-meta) !important;
+  font-weight: 700 !important;
+  height: auto !important;
+  padding: 9px 16px !important;
+  color: var(--color-text) !important;
+  box-shadow:
+    0 4px 0 0 var(--color-deep),
+    0 4px 0 2px var(--color-stroke) !important;
 }
 .wallet-adapter-modal-wrapper {
-  background: var(--color-panel) !important;
-  border-radius: 3px !important;
+  background: var(--color-card) !important;
+  border: 3px solid var(--color-stroke) !important;
+  border-radius: 22px !important;
+  font-family: var(--font-display) !important;
 }
 .wallet-adapter-modal-title {
-  color: var(--color-ink) !important;
+  color: var(--color-text) !important;
+  font-size: var(--text-card) !important;
+}
+.wallet-adapter-modal-list li button {
+  background: var(--color-card-hi) !important;
+  border-radius: 14px !important;
+  color: var(--color-text) !important;
+}
+.wallet-adapter-modal-button-close {
+  background: var(--color-card-hi) !important;
 }

@@ -21,12 +21,10 @@ export function Receipts({ items }: { items: Receipt[] }) {
   if (items.length === 0) return null;
 
   return (
-    <section className="mt-5 border border-[var(--color-rule)] bg-[var(--color-panel)]">
+    <section className="card">
       <header className="flex items-baseline justify-between border-b border-[var(--color-rule)] px-5 py-3">
-        <h2 className="text-[13px] font-medium tracking-[0.02em]">
-          This session
-        </h2>
-        <span className="tabular text-[10px] uppercase tracking-[0.14em] text-[var(--color-ink-soft)]">
+        <h2 className="text-[14px] font-medium">This session</h2>
+        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--color-ink-faint)]">
           Receipts
         </span>
       </header>
@@ -41,14 +39,14 @@ export function Receipts({ items }: { items: Receipt[] }) {
               href={explorerUrl(r.signature)}
               target="_blank"
               rel="noreferrer"
-              className="tabular break-all text-[11px] text-[var(--color-signal)] underline underline-offset-2"
+              className="tabular break-all text-[11px] text-[var(--color-signal-hi)] underline underline-offset-2"
             >
               {r.signature.slice(0, 12)}…{r.signature.slice(-12)}
             </a>
           </li>
         ))}
       </ul>
-      <footer className="border-t border-[var(--color-rule)] px-5 py-2.5 text-[11px] text-[var(--color-ink-soft)]">
+      <footer className="border-t border-[var(--color-rule)] px-5 py-2.5 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
         Every action is a Solana transaction. Verify each one yourself — these
         links go to the explorer, not to us.
       </footer>
