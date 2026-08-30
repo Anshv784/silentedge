@@ -280,12 +280,161 @@ samp,
   inset: 0;
   z-index: -2;
   pointer-events: none;
+  overflow: hidden;
+  /* The deep base. Everything else layers on top of this. */
+  background:
+    radial-gradient(140% 100% at 50% -20%, #241556 0%, #120a2c 46%, #08041a 100%);
+}
+
+/* THE GRID FLOOR.
+   A perspective grid receding to a horizon — the one piece of literal "3D" on
+   the page, and it costs two repeating gradients and one static transform. It
+   is drawn once and never repainted: the drift below animates a transform, not
+   the gradient. */
+.ground::before {
+  content: "";
+  position: absolute;
+  /* The horizon sits a little above the fold rather than at the very bottom of
+     the viewport, where the price ticker covered it completely. */
+  left: -60%;
+  right: -60%;
+  bottom: 0;
+  height: 58%;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      color-mix(in srgb, var(--color-stroke) 55%, transparent) 0 1px,
+      transparent 1px 84px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-stroke) 55%, transparent) 0 1px,
+      transparent 1px 84px
+    );
+  transform: perspective(420px) rotateX(58deg);
+  transform-origin: 50% 100%;
+  mask-image: linear-gradient(to top, #000 12%, transparent 82%);
+  opacity: 0.9;
+  animation: floor 26s linear infinite;
+}
+
+/* The grid crawls toward the viewer. transform only. */
+@keyframes floor {
+  to {
+    background-position:
+      0 84px,
+      0 84px;
+  }
+}
+
+/* TWO SLOW LIGHTS.
+   Large soft radials on transform-animated layers. A pre-baked gradient rather
+   than an animated `filter: blur()`, which would be a real gaussian pass on
+   every frame — the single most expensive thing a background can do. */
+.ground::after {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  background:
+    radial-gradient(
+      38% 38% at 22% 28%,
+      color-mix(in srgb, var(--color-magenta) 20%, transparent) 0%,
+      transparent 68%
+    ),
+    radial-gradient(
+      34% 34% at 78% 62%,
+      color-mix(in srgb, var(--color-cyan) 16%, transparent) 0%,
+      transparent 66%
+    );
+  animation: drift 34s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(-3%, -2%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(3%, 2%, 0) scale(1.12);
+  }
+}
+
+/* THE CURSOR LIGHT.
+   One fixed element, moved by a single rAF-throttled pointermove that writes
+   two custom properties. No React state, no per-frame layout, and it is not
+   rendered at all on touch or under reduced motion. */
+.cursor-light {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 620px;
+  height: 620px;
+  margin: -310px 0 0 -310px;
+  pointer-events: none;
+  border-radius: 50%;
   background: radial-gradient(
-    120% 90% at 50% -10%,
-    #2a1a63 0%,
-    #150b33 45%,
-    #0b0620 100%
+    circle,
+    color-mix(in srgb, var(--color-lime) 22%, transparent) 0%,
+    color-mix(in srgb, var(--color-cyan) 10%, transparent) 30%,
+    transparent 66%
   );
+  transform: translate3d(var(--mx, -999px), var(--my, -999px), 0);
+  will-change: transform;
+  opacity: 0;
+  transition: opacity 420ms var(--ease-swap);
+}
+.cursor-light[data-on="1"] {
+  opacity: 1;
+}
+
+/* THE CURSOR RING.
+   Trails the pointer with a shorter spring than the light, so the two separate
+   slightly on a fast move and snap back together when it stops. Additive — the
+   real cursor is never hidden, because replacing it is how a playful site
+   becomes an unusable one. */
+.cursor-ring {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  pointer-events: none;
+  border: 2px solid color-mix(in srgb, var(--color-lime) 70%, transparent);
+  border-radius: 50%;
+  transform: translate3d(var(--rx2, -999px), var(--ry2, -999px), 0) scale(var(--rs, 1));
+  will-change: transform;
+  opacity: 0;
+  transition:
+    opacity 260ms var(--ease-swap),
+    border-color 160ms var(--ease-swap);
+}
+.cursor-ring[data-on="1"] {
+  opacity: 1;
+}
+/* Over anything clickable it swells and switches to the cyan. */
+.cursor-ring[data-hot="1"] {
+  border-color: color-mix(in srgb, var(--color-cyan) 85%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ground::before,
+  .ground::after {
+    animation: none;
+  }
+  .cursor-light,
+  .cursor-ring {
+    display: none;
+  }
+}
+/* Coarse pointers have no cursor to decorate. */
+@media (pointer: coarse) {
+  .cursor-light,
+  .cursor-ring {
+    display: none;
+  }
 }
 
 /* Grain. One small tile, rasterized once at load, composited, never repainted.

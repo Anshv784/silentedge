@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Machine } from "@/components/machine";
+import { Cursor } from "@/components/cursor";
 import { useOraclePrice } from "@/lib/oracle-feed";
 
 /**
@@ -689,6 +690,8 @@ export function Landing() {
 
   return (
     <div>
+      <Cursor />
+
       {/* ------------------------------------------------------- top bar */}
       <header
         className="sticky top-0 z-50 border-b-[3px] border-[var(--color-stroke)]"
