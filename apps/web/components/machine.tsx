@@ -161,25 +161,39 @@ export function Machine({ price }: { price: number | null }) {
           style={{ opacity: beat === 1 ? 1 : 0 }}
           aria-hidden
         >
-          {/* Links first, so the cards paint over them. */}
-          <svg
-            className="absolute inset-0 h-full w-full"
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
-          >
-            {NODES.map((n, i) => (
-              <line
+          {/* Links, as DOM elements in the SAME percentage space as the cards.
+              They were an SVG with its own viewBox, and the two spaces do not
+              agree: the stage carries a 3D perspective tilt, which projects the
+              cards non-linearly (a node declared at 80/63 lands at 70.7/53.6)
+              while the viewBox maps straight through. So every line stopped
+              short of its card or shot past it. Positioned like this there is
+              one coordinate system and they cannot drift.
+
+              The angle is computable ahead of time because the stage is a
+              fixed 5/4, so one vertical percent is 0.8 of a horizontal one. */}
+          {NODES.map((n, i) => {
+            const dx = n.x - 50;
+            const dy = (n.y - 50) * 0.8;
+            return (
+              <span
                 key={i}
-                x1="50"
-                y1="50"
-                x2={n.x}
-                y2={n.y}
-                stroke="var(--color-stroke)"
-                strokeWidth="0.35"
-                strokeDasharray="2 2"
+                className="absolute left-1/2 top-1/2 h-0 border-t-2 border-dashed"
+                style={{
+                  /* Stop short of the node rather than running to its centre.
+                     The cards paint over these, but the perspective projection
+                     moves a card a few px from where the flat maths puts it,
+                     so a line drawn to the exact centre poked out the far side.
+                     A card is ~15% of the stage wide, so its half-width is ~7.5%;
+                     ending 4% early keeps the tip inside the card while
+                     leaving no visible gap on the long diagonals. */
+                  width: `${Math.max(0, Math.hypot(dx, dy) - 4)}%`,
+                  transformOrigin: "0 50%",
+                  transform: `rotate(${(Math.atan2(dy, dx) * 180) / Math.PI}deg)`,
+                  borderColor: "var(--color-stroke)",
+                }}
               />
-            ))}
-          </svg>
+            );
+          })}
 
           {/* The origin: the sealed block from beat 0, now the thing being
               divided. It shrinks as the shares land. */}
