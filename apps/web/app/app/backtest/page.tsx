@@ -252,7 +252,7 @@ export default function BacktestPage() {
             shorter than the form, the leftover reads as page rather than as a
             slab of rule colour. */}
         <div className="bg-[var(--color-paper)]">
-          <div className="grid content-start gap-px bg-[var(--color-rule)] sm:grid-cols-2">
+          <div className="grid content-start gap-px bg-[var(--color-void)] sm:grid-cols-2">
             {!result ? (
               <div className="bg-[var(--color-paper)] sm:col-span-2">
                 <Gate title="Nothing simulated yet">

@@ -165,10 +165,16 @@
     color: var(--color-text-3);
   }
   .ledger {
+    /* Cards tile on a ground and the gaps read as rules. The ground used to be
+       --color-stroke (#53555d): correct as a 3px hairline, but the moment two
+       columns have different content heights the taller one leaves the shorter
+       one's ground exposed as a light grey slab hundreds of pixels tall. Void
+       instead — the gaps still separate the #212226 cards clearly, and any
+       area no card covers now reads as page rather than as a broken box. */
     display: grid;
     gap: 3px;
-    background: var(--color-stroke);
-    border-block: 3px solid var(--color-stroke);
+    background: var(--color-void);
+    border-block: 3px solid var(--color-void);
   }
   .block {
     background: var(--color-card);
@@ -557,7 +563,15 @@ body::after {
       0 0 0 3px var(--color-stroke);
   }
   .btn:disabled {
-    opacity: 0.45;
+    /* Not opacity. Fading .btn-primary turned lime over black into olive, and
+       took its dark label down with it — the most prominent control on the
+       strategy page was a muddy slab with barely legible text. A disabled
+       button is an inert surface, so render it as one. #8e949e on #212226 is
+       5.0:1, still comfortably readable. */
+    background: var(--color-card);
+    color: var(--color-text-3);
+    border-color: var(--color-stroke);
+    box-shadow: none;
     cursor: not-allowed;
   }
   .btn-primary {

@@ -413,14 +413,17 @@ export function Skeleton({ w = "100%" }: { w?: string }) {
       className="relative inline-block h-[1em] overflow-hidden rounded-sm align-middle"
       style={{
         width: w,
-        background: "color-mix(in srgb, var(--color-signal) 10%, transparent)",
+        /* Neutral, not --color-signal. Signal is lime, the action colour, and
+           at 10% over black it rendered every loading placeholder as a muddy
+           olive bar that read as broken content rather than as pending. */
+        background: "color-mix(in srgb, var(--color-stroke) 42%, transparent)",
       }}
     >
       <motion.span
         className="absolute inset-y-0 w-1/2"
         style={{
           background:
-            "linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-signal) 26%, transparent), transparent)",
+            "linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-text-3) 34%, transparent), transparent)",
         }}
         animate={{ x: ["-100%", "300%"] }}
         transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}

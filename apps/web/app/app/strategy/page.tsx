@@ -604,7 +604,7 @@ export default function StrategyStudio() {
         className="ledger xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]"
       >
         {/* ============================================ left: the inputs */}
-        <div className="grid gap-px bg-[var(--color-rule)]">
+        <div className="grid gap-px bg-[var(--color-void)]">
           <Block prov="public">
             <BlockHead
               title={TRADABLE.label}
@@ -948,7 +948,7 @@ export default function StrategyStudio() {
 
         {/* ========================================== right: the outcome */}
         <div className="flex flex-col">
-          <div className="grid flex-1 gap-px bg-[var(--color-rule)]">
+          <div className="grid flex-1 content-start gap-px bg-[var(--color-void)]">
             <Block>
               <BlockHead
                 title="Simulation"
@@ -1326,8 +1326,15 @@ export default function StrategyStudio() {
           </div>
 
           {/* The terminus. It follows you down the column rather than sitting
-              after four hundred words of explanation. */}
-          <div className="sticky bottom-0 z-20 border-t border-[var(--color-rule)] bg-[var(--color-paper)] p-[var(--pad-2)]">
+              after four hundred words of explanation — but only while it can
+              actually do something. Stuck to the bottom with no wallet it just
+              sat on top of the Risk card, obstructing the rail to offer an
+              action that cannot be taken. */}
+          <div
+            className={`z-20 border-t border-[var(--color-rule)] bg-[var(--color-paper)] p-[var(--pad-2)] ${
+              s.connected && s.vaultStatus ? "sticky bottom-0" : ""
+            }`}
+          >
             <button
               className="btn btn-primary btn-xl w-full"
               disabled={working || !s.connected || !s.vaultStatus}
