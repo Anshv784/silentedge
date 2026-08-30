@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 /**
  * THE MACHINE — the animated explanation of what this product does.
@@ -47,15 +47,6 @@ const SHARES: [string, string, string][] = [
   ["94·2f", "13·d8", "ab·31"],
   ["e6·38", "72·1a", "5c·90"],
   ["5d·d1", "e9·64", "08·bf"],
-];
-
-/** The five node positions, as percentages of the stage. */
-const NODES = [
-  { x: 18, y: 20 },
-  { x: 74, y: 17 },
-  { x: 80, y: 63 },
-  { x: 46, y: 82 },
-  { x: 16, y: 66 },
 ];
 
 export function Machine({ price }: { price: number | null }) {
@@ -147,97 +138,78 @@ export function Machine({ price }: { price: number | null }) {
         </div>
 
         {/* ---------------------------------------------------- beat 1 */}
-        {/* One sealed block splits, and every node ends up holding a fragment
-            of all three prices and a whole copy of none.
+        {/* One row per price, one column per node.
 
-            This used to be five bare dots and three tiles on a large stage —
-            technically the right diagram, but almost entirely empty space, and
-            it did not show the thing that makes MPC MPC: that each node's copy
-            is USELESS, not just partial. Each node is a card now, listing what
-            it holds for buy / sell / stop. Fifteen fragments, no whole
-            numbers, and the box is full. */}
+            This was a scatter of node cards joined to a centre by dashed
+            connectors, and the connectors never landed: the stage carries a 3D
+            perspective tilt, so anything positioned by flat maths — an SVG
+            viewBox, or percentages — projects somewhere slightly else, and the
+            lines stopped in mid-air or ran out the far side of a card. Chasing
+            that alignment was the wrong fix. A grid has no free coordinates to
+            get wrong, and it states the claim better anyway: read any single
+            column top to bottom and it is noise. */}
         <div
-          className="pointer-events-none absolute inset-0 transition-opacity duration-300"
+          className="pointer-events-none absolute inset-0 flex flex-col justify-center px-5 transition-opacity duration-300"
           style={{ opacity: beat === 1 ? 1 : 0 }}
           aria-hidden
         >
-          {/* Links, as DOM elements in the SAME percentage space as the cards.
-              They were an SVG with its own viewBox, and the two spaces do not
-              agree: the stage carries a 3D perspective tilt, which projects the
-              cards non-linearly (a node declared at 80/63 lands at 70.7/53.6)
-              while the viewBox maps straight through. So every line stopped
-              short of its card or shot past it. Positioned like this there is
-              one coordinate system and they cannot drift.
-
-              The angle is computable ahead of time because the stage is a
-              fixed 5/4, so one vertical percent is 0.8 of a horizontal one. */}
-          {NODES.map((n, i) => {
-            const dx = n.x - 50;
-            const dy = (n.y - 50) * 0.8;
-            return (
+          <div
+            className="grid gap-x-2 gap-y-2"
+            style={{ gridTemplateColumns: "auto repeat(5, minmax(0,1fr))" }}
+          >
+            <span />
+            {[1, 2, 3, 4, 5].map((n, c) => (
               <span
-                key={i}
-                className="absolute left-1/2 top-1/2 h-0 border-t-2 border-dashed"
+                key={n}
+                className="mono pb-1.5 text-center text-[10px] tracking-[0.12em] text-[var(--color-text-3)]"
                 style={{
-                  /* Stop short of the node rather than running to its centre.
-                     The cards paint over these, but the perspective projection
-                     moves a card a few px from where the flat maths puts it,
-                     so a line drawn to the exact centre poked out the far side.
-                     A card is ~15% of the stage wide, so its half-width is ~7.5%;
-                     ending 4% early keeps the tip inside the card while
-                     leaving no visible gap on the long diagonals. */
-                  width: `${Math.max(0, Math.hypot(dx, dy) - 4)}%`,
-                  transformOrigin: "0 50%",
-                  transform: `rotate(${(Math.atan2(dy, dx) * 180) / Math.PI}deg)`,
-                  borderColor: "var(--color-stroke)",
+                  opacity: beat === 1 ? 1 : 0,
+                  transform: `translateY(${beat === 1 ? 0 : -6}px)`,
+                  transition: `opacity 260ms ease ${c * 60}ms, transform 260ms var(--ease-arrive) ${c * 60}ms`,
                 }}
-              />
-            );
-          })}
-
-          {/* The origin: the sealed block from beat 0, now the thing being
-              divided. It shrinks as the shares land. */}
-          <span
-            className="absolute left-1/2 top-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg"
-            style={{
-              background: "var(--color-magenta)",
-              backgroundImage:
-                "radial-gradient(circle, rgba(11,6,32,.55) 1px, transparent 1.2px)",
-              backgroundSize: "5px 5px",
-              transform: `translate(-50%, -50%) scale(${beat === 1 ? 0.75 : 1})`,
-              transition: "transform 420ms var(--ease-arrive)",
-            }}
-          />
-
-          {NODES.map((n, i) => (
-            <span
-              key={i}
-              className="absolute -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 px-2.5 py-2"
-              style={{
-                left: `${n.x}%`,
-                top: `${n.y}%`,
-                borderColor: "var(--color-magenta)",
-                background: "var(--color-deep)",
-                opacity: beat === 1 ? 1 : 0,
-                transform: `translate(-50%, -50%) scale(${beat === 1 ? 1 : 0.6})`,
-                transition: `opacity 300ms ease ${i * 70}ms, transform 340ms var(--ease-arrive) ${i * 70}ms`,
-              }}
-            >
-              <span className="mono block text-[8px] tracking-[0.14em] text-[var(--color-magenta)]">
-                NODE {i + 1}
+              >
+                NODE {n}
               </span>
-              {(["buy", "sell", "stop"] as const).map((k, j) => (
-                <span key={k} className="mt-1 flex items-center gap-1.5">
-                  <span className="mono text-[8px] text-[var(--color-text-3)]">
-                    {k}
-                  </span>
-                  <span className="mono tnum text-[9px] text-[var(--color-text-2)]">
-                    {SHARES[i][j]}
-                  </span>
+            ))}
+
+            {(["buy", "sell", "stop"] as const).map((k, r) => (
+              <Fragment key={k}>
+                <span className="mono flex items-center gap-2 pr-2 text-[12px] text-[var(--color-text-2)]">
+                  <span
+                    className="h-4 w-4 shrink-0 rounded-[3px]"
+                    style={{
+                      background: "var(--color-magenta)",
+                      backgroundImage:
+                        "radial-gradient(circle, rgba(11,6,32,.55) 1px, transparent 1.2px)",
+                      backgroundSize: "4px 4px",
+                    }}
+                  />
+                  {k}
                 </span>
-              ))}
-            </span>
-          ))}
+                {SHARES.map((col, c) => (
+                  <span
+                    key={c}
+                    className="mono tnum rounded-lg border-2 py-3 text-center text-[12px]"
+                    style={{
+                      borderColor:
+                        "color-mix(in srgb, var(--color-magenta) 45%, transparent)",
+                      background: "var(--color-deep)",
+                      color: "var(--color-text-2)",
+                      opacity: beat === 1 ? 1 : 0,
+                      transform: `scale(${beat === 1 ? 1 : 0.7})`,
+                      transition: `opacity 240ms ease ${(c * 3 + r) * 40}ms, transform 300ms var(--ease-arrive) ${(c * 3 + r) * 40}ms`,
+                    }}
+                  >
+                    {col[r]}
+                  </span>
+                ))}
+              </Fragment>
+            ))}
+          </div>
+
+          <p className="mono mt-6 text-center text-[11px] tracking-[0.1em] text-[var(--color-text-3)]">
+            15 fragments · 0 whole numbers · any one column is noise
+          </p>
         </div>
 
 

@@ -416,7 +416,7 @@ export function Skeleton({ w = "100%" }: { w?: string }) {
         /* Neutral, not --color-signal. Signal is lime, the action colour, and
            at 10% over black it rendered every loading placeholder as a muddy
            olive bar that read as broken content rather than as pending. */
-        background: "color-mix(in srgb, var(--color-stroke) 42%, transparent)",
+        background: "color-mix(in srgb, var(--color-stroke) 22%, transparent)",
       }}
     >
       <motion.span
