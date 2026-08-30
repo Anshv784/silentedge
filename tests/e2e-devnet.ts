@@ -165,7 +165,7 @@ describe("end to end, on devnet", function () {
 
   /**
    * Encrypted with the SDK the browser uses. Three scalars: `size_bps` is
-   * public vault config and deliberately not in here (THREAT_MODEL T-38).
+   * public vault config and deliberately not in here (SECURITY.md T-38).
    */
   it("stores a strategy the program cannot read", async () => {
     const price = await livePrice();

@@ -269,7 +269,7 @@ mod tests {
     ///
     /// If it moved the floor down, oracle uncertainty would be spendable as
     /// extra slippage by whoever routes the swap — silently widening the only
-    /// window in which value can leak (THREAT_MODEL §2.1).
+    /// window in which value can leak (SECURITY.md §2.1).
     #[test]
     fn confidence_tightens_the_floor_it_never_loosens_it() {
         let wide = OraclePrice { price: P, conf: P / 200 }; // 50 bps

@@ -494,7 +494,7 @@ describe("vault — swap execution against forked mainnet", function () {
    * The oracle guards, which had no detectors at all.
    *
    * `ConfidenceTooWide` and `PriceTooOld` appeared zero times across tests/
-   * while THREAT_MODEL §9 listed "stale price -> rejected" and "wide
+   * while SECURITY.md §9 listed "stale price -> rejected" and "wide
    * confidence -> rejected" as met obligations. Both are cheap to falsify here
    * because the fork lets the price account be rewritten: widen the published
    * confidence, or simply let the timestamp age, and the program must refuse
@@ -639,7 +639,7 @@ describe("vault — swap execution against forked mainnet", function () {
   });
 
   /**
-   * THREAT_MODEL §9 listed "expired intent -> rejected" and "replayed intent ->
+   * SECURITY.md §9 listed "expired intent -> rejected" and "replayed intent ->
    * rejected" as met obligations. Only the replay half existed; `IntentExpired`
    * and `IntentStale` appeared nowhere in tests/. An authorization whose whole
    * safety story is "it goes stale quickly" needs the staleness checked.

@@ -57,7 +57,7 @@ pub struct RiskLimits {
     /// strategy, which implied a secrecy it never had: the traded amount and
     /// the vault balance are both public in the same transaction, so
     /// `size_bps = amount * 10_000 / balance` recovers it exactly from a single
-    /// trade. See THREAT_MODEL T-38 and docs/what-is-private.md. Encrypting it
+    /// trade. See SECURITY.md T-38 and docs/privacy.md. Encrypting it
     /// cost MPC gates to protect nothing, and told the user it was protected.
     pub size_bps: u16,
 }

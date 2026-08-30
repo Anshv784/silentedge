@@ -55,7 +55,7 @@ describe("encryptStrategy", () => {
     const e = encryptStrategy(normalize(secretDraft(), MAX_SIZE_BPS), mxe.publicKey);
 
     // Three, not four. `sizeBps` left the encrypted struct because a single
-    // trade recovers it exactly from public data — THREAT_MODEL T-38.
+    // trade recovers it exactly from public data — SECURITY.md T-38.
     expect(e.ciphertexts).to.have.length(3);
     for (const ct of e.ciphertexts) expect(ct).to.have.length(32);
     expect(e.nonce).to.have.length(16);

@@ -138,7 +138,7 @@ describe("vault — trade authorization", () => {
    * account, so it follows a `migrate-cluster` silently, and `verify_output`
    * validates against whatever cluster it is handed. Pinning to a compiled-in
    * offset is what stops an operator who migrated the MXE from minting
-   * attestations this program would accept. See THREAT_MODEL T-37.
+   * attestations this program would accept. See SECURITY.md T-37.
    */
   /**
    * Cluster pinning — STRUCTURAL ONLY. Read this before trusting it.
@@ -163,7 +163,7 @@ describe("vault — trade authorization", () => {
    * So: the derivation is proven by a Rust unit test (`programs/vault` —
    * `pins_the_expected_cluster`), the constant is proven to be cfg-split per
    * network, and the *call site* is unverified. Recorded as CODED, not
-   * ENFORCED, in SECURITY_AUDIT.md.
+   * ENFORCED, in SECURITY.md.
    */
   it("derives the pinned cluster and keeps a cluster account on both callbacks", async () => {
     const expected = PublicKey.findProgramAddressSync(

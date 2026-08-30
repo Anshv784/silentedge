@@ -21,7 +21,7 @@ mod circuits {
     /// setting, because the traded amount and the vault balance are both public
     /// in the same transaction and their ratio recovers it exactly — one trade
     /// was enough. Encrypting it spent gates to protect nothing while telling
-    /// the user it was protected. See THREAT_MODEL T-38.
+    /// the user it was protected. See SECURITY.md T-38.
     ///
     /// A rule the user switched off is stored as a value whose comparison can
     /// never be true (0 for buy, `u64::MAX` for sell) rather than being absent.

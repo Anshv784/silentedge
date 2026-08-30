@@ -3,7 +3,7 @@
  *
  * The negative tests matter more than the positive ones here. A vault that
  * accepts a deposit is unremarkable; a vault that refuses every unauthorized
- * path is the entire product. Test obligations: THREAT_MODEL.md §9.
+ * path is the entire product. Test obligations: SECURITY.md §9.
  *
  * Runs against Surfpool forked from devnet, so BASE_MINT and QUOTE_MINT are the
  * real mints and the production allowlist is what gets exercised.
@@ -147,7 +147,7 @@ describe("vault — custody", () => {
   });
 
   /**
-   * THREAT_MODEL §9 listed "non-allowlisted mint -> rejected" as a met
+   * SECURITY.md §9 listed "non-allowlisted mint -> rejected" as a met
    * obligation while `MintNotAllowed` appeared nowhere in tests/. The allowlist
    * is what keeps a vault's two sides to assets the oracle and the swap path
    * actually understand, so it is worth a detector rather than a claim.
@@ -660,7 +660,7 @@ describe("vault — custody", () => {
   // -------------------------------------------------------------- structural
 
   /**
-   * Emergency-withdrawal independence (THREAT_MODEL §8.1).
+   * Emergency-withdrawal independence (SECURITY.md §8.1).
    *
    * A behavioural test cannot prove Arcium is absent, because Arcium is absent
    * from the whole program today. What this pins is the *shape* of `withdraw`:

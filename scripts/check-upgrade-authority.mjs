@@ -1,7 +1,7 @@
 /**
  * Refuse to ship if the upgrade authority is a hot key.
  *
- * T-3 is the most serious finding in SECURITY_AUDIT.md and the only one this
+ * T-3 is the most serious finding in SECURITY.md and the only one this
  * repo cannot fix from inside the program: whoever holds the upgrade authority
  * can replace `withdraw` with a version that pays an operator, which makes
  * every other control conditional on that key. It was recorded as a

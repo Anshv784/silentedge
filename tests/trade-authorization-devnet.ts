@@ -40,7 +40,7 @@ const usd = (n: number) => BigInt(Math.round(n * 1e6));
 const fmt = (v: bigint) => `$${(Number(v) / 1e6).toFixed(2)}`;
 const NEVER_SELL = 18_446_744_073_709_551_615n;
 const NEVER_BUY = 0n;
-/** Public vault setting now, not an encrypted field — THREAT_MODEL T-38. */
+/** Public vault setting now, not an encrypted field — SECURITY.md T-38. */
 const SIZE_BPS = 1_000;
 /** Funds the vault so a sized trade is non-zero. 10% of this is the trade. */
 const DEPOSIT = usd(5_000);

@@ -7,8 +7,8 @@ pub const VAULT_SEED: &[u8] = b"vault";
 pub const STRATEGY_SEED: &[u8] = b"strategy";
 
 /// Encrypted scalars in a strategy: entry_below, exit_above, stop_below.
-/// `size_bps` is public vault config, not encrypted — see THREAT_MODEL T-38.
-/// Fixed because Arcis circuits are fixed-shape (RESEARCH.md §2.7).
+/// `size_bps` is public vault config, not encrypted — see SECURITY.md T-38.
+/// Fixed because Arcis circuits are fixed-shape (docs/research.md §2.7).
 pub const STRATEGY_FIELDS: usize = 3;
 
 /// Seed prefix for a vault's pending trade authorization.
@@ -18,7 +18,7 @@ pub const INTENT_SEED: &[u8] = b"intent";
 ///
 /// Deliberately short. The intent is public between the callback writing it and
 /// an executor consuming it, so the window is also the window in which someone
-/// can position against it (THREAT_MODEL T-27, T-28). Long enough to land a
+/// can position against it (SECURITY.md T-27, T-28). Long enough to land a
 /// transaction, short enough that a stale decision cannot be executed against a
 /// market that has moved.
 pub const INTENT_TTL_SLOTS: u64 = 180;
@@ -34,7 +34,7 @@ pub const INTENT_TTL_SLOTS: u64 = 180;
 ///
 /// Pinning it to a constant closes that. Changing it requires a program upgrade,
 /// which a timelocked upgrade authority makes public and delayed.
-/// See ARCHITECTURE.md §7.1 and THREAT_MODEL.md T-37.
+/// See ARCHITECTURE.md §7.1 and SECURITY.md T-37.
 ///
 /// This constant carried no `#[cfg]` until now, and a second
 /// `EXPECTED_CLUSTER_OFFSET_MAINNET` sat beside it that nothing ever read. A
@@ -86,7 +86,7 @@ pub const QUOTE_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyT
 ///
 /// Pinned as a constant on purpose. Accepting a swap program id from instruction
 /// data would make this an arbitrary CPI executor, which is the single most
-/// dangerous thing a vault can expose. See THREAT_MODEL T-2.
+/// dangerous thing a vault can expose. See SECURITY.md T-2.
 pub const JUPITER_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 
 /// `TradeIntent.side` values. 0 never reaches an intent — HOLD writes nothing.
