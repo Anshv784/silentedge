@@ -196,7 +196,12 @@
     background: var(--color-void);
     border-block: 3px solid var(--color-void);
   }
-  .block {
+  /* Named .card, NOT .block. `block` is Tailwind's display utility, and a
+     component class of the same name silently gave every `className="block"`
+     in the app a card background and 26px of padding. Form labels were the
+     worst hit: <label className="block"> lost 52px of width, so its text wrapped
+     to five lines and each field grew to 314px tall. */
+  .card {
     background: var(--color-card);
     padding: var(--pad-2);
   }

@@ -301,7 +301,7 @@ export default function Overview() {
           </div>
 
           <div className="ledger sm:grid-cols-2 lg:min-w-[380px]">
-            <div className="block">
+            <div className="card">
               <div className="u-label">
                 {BASE_SYMBOL} / USD
               </div>
@@ -333,7 +333,7 @@ export default function Overview() {
                   : "loading history"}
               </div>
             </div>
-            <div className="block">
+            <div className="card">
               <div className="u-label">Strategy</div>
               <div className="mt-3 text-title capitalize">
                 {!s.connected
@@ -408,7 +408,7 @@ export default function Overview() {
         <Reveal className="mt-2">
           <div className="ledger xl:grid-cols-[1.7fr_1fr]">
             {/* ------------------------------------------------ left column */}
-            <motion.div variants={REVEAL_ITEM} className="block prov prov-public">
+            <motion.div variants={REVEAL_ITEM} className="card prov prov-public">
               <BlockHead
                 eyebrow="Exposed · public price data"
                 title={`${TRADABLE.label} · 7 days of 1H`}
@@ -464,7 +464,7 @@ export default function Overview() {
             </motion.div>
 
             {/* ----------------------------------------------- right column */}
-            <motion.div variants={REVEAL_ITEM} className="block prov prov-private">
+            <motion.div variants={REVEAL_ITEM} className="card prov prov-private">
               <BlockHead
                 eyebrow="Shielded · never leaves the computation"
                 title="Strategy"
@@ -545,7 +545,7 @@ export default function Overview() {
 
             {/* --------------------------------------------------- balances */}
             {s.connected && !s.vaultStatus ? (
-              <motion.div variants={REVEAL_ITEM} className="block xl:col-span-2">
+              <motion.div variants={REVEAL_ITEM} className="card xl:col-span-2">
                 <BlockHead
                   title="No vault yet"
                   hint="A program-derived account only your address can withdraw from."
@@ -555,7 +555,7 @@ export default function Overview() {
             ) : null}
 
             {s.connected && s.vaultStatus ? (
-              <motion.div variants={REVEAL_ITEM} className="block prov prov-public">
+              <motion.div variants={REVEAL_ITEM} className="card prov prov-public">
                 <BlockHead
                   eyebrow="Exposed · readable on chain"
                   title="Balances & transfer"
@@ -620,7 +620,7 @@ export default function Overview() {
             ) : null}
 
             {/* --------------------------------------------------- activity */}
-            <motion.div variants={REVEAL_ITEM} className="block xl:col-span-2">
+            <motion.div variants={REVEAL_ITEM} className="card xl:col-span-2">
               <BlockHead
                 eyebrow="Exposed · readable on chain"
                 title="Vault activity"

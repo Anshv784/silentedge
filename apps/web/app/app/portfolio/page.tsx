@@ -138,7 +138,7 @@ export default function PortfolioPage() {
           <Block prov="public" className="lg:col-span-2">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="u-label text-[var(--color-ink-faint)]">
-                Total value
+                Total value · {BASE_SYMBOL} valued at the oracle
               </div>
               <Prov tone="public">Exposed · on chain</Prov>
             </div>
@@ -147,9 +147,15 @@ export default function PortfolioPage() {
               {!publicKey ? (
                 <>
                   {/* Not redacted — unknown. A vault balance is public data;
-                      this page just has no address to read it at. */}
-                  <span className="unknown" aria-hidden>
-                    0,000.00
+                      this page just has no address to read it at. Not the
+                      hatch either: at figure size it read as a barcode, and
+                      the digits under it were `0,000.00`, which is the one
+                      thing an unknown balance must never appear to say. */}
+                  <span
+                    className="text-[var(--color-ink-faint)]"
+                    aria-hidden
+                  >
+                    —
                   </span>
                   <span className="sr-only">
                     Unknown — no wallet is connected
@@ -164,8 +170,12 @@ export default function PortfolioPage() {
               ) : (
                 <Ticking value={total} format={(n) => fmt(n)} kind="money" />
               )}
+              {/* NOT `USDC`. This figure is usdc + sol x price — a valuation
+                  in quote terms, not a token balance. Labelled USDC it told a
+                  wallet holding 0 USDC and 31 SOL that it held 3,270 USDC. The
+                  price it was valued at is the row directly below. */}
               <span className="text-title text-[var(--color-ink-soft)]">
-                {QUOTE_SYMBOL}
+                ≈ {QUOTE_SYMBOL}
               </span>
             </div>
 
@@ -178,11 +188,11 @@ export default function PortfolioPage() {
             <div className="mt-7 grid gap-x-10 sm:grid-cols-2">
               <Row
                 label="In the vault"
-                value={`${fmt(vaultValue)} ${QUOTE_SYMBOL}`}
+                value={`≈ ${fmt(vaultValue)} ${QUOTE_SYMBOL}`}
               />
               <Row
                 label="In your wallet"
-                value={`${fmt(walletValue)} ${QUOTE_SYMBOL}`}
+                value={`≈ ${fmt(walletValue)} ${QUOTE_SYMBOL}`}
               />
               <Row
                 label="Price used"

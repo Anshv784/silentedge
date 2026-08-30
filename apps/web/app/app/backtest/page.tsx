@@ -184,10 +184,14 @@ export default function BacktestPage() {
 
       <Reveal
         as="div"
-        className="ledger mt-8 lg:grid-cols-[minmax(0,440px)_minmax(0,1fr)]"
+        className="ledger mt-8 lg:grid-cols-[minmax(0,440px)_minmax(0,1fr)] lg:items-start"
       >
-        {/* ------------------------------------------------------- the rules */}
-        <Block>
+        {/* ------------------------------------------------------- the rules
+            Sticky, and the row is items-start. The results column runs to a
+            hundred and eighty trades; stretched to match it, this card was a
+            thousand pixels of empty grey. A control panel should follow the
+            thing it controls anyway. */}
+        <Block className="lg:sticky lg:top-20">
           <BlockHead
             eyebrow="01"
             title="Rules"
@@ -252,7 +256,11 @@ export default function BacktestPage() {
             shorter than the form, the leftover reads as page rather than as a
             slab of rule colour. */}
         <div className="bg-[var(--color-paper)]">
-          <div className="grid content-start gap-px bg-[var(--color-void)] sm:grid-cols-2">
+          <div
+            className={`grid gap-px bg-[var(--color-void)] sm:grid-cols-2 ${
+              result ? "content-start" : "h-full"
+            }`}
+          >
             {!result ? (
               <div className="bg-[var(--color-paper)] sm:col-span-2">
                 <Gate title="Nothing simulated yet">

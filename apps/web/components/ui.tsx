@@ -109,10 +109,10 @@ export function Block({
 }) {
   const p = prov ? `prov prov-${prov}` : "";
   if (!reveal) {
-    return <section className={`block ${p} ${className}`}>{children}</section>;
+    return <section className={`card ${p} ${className}`}>{children}</section>;
   }
   return (
-    <motion.section variants={REVEAL_ITEM} className={`block ${p} ${className}`}>
+    <motion.section variants={REVEAL_ITEM} className={`card ${p} ${className}`}>
       {children}
     </motion.section>
   );
@@ -512,7 +512,7 @@ export function Gate({
   prov?: "public" | "private";
 }) {
   return (
-    <div className={`block ${prov ? `prov prov-${prov}` : ""} py-14`}>
+    <div className={`card ${prov ? `prov prov-${prov}` : ""} py-14`}>
       <div className="mx-auto max-w-lg text-center">
         <h2 className="text-title">{title}</h2>
         {children ? (

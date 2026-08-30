@@ -340,7 +340,7 @@ export default function DiscoverPage() {
                     /* Every listing is public data, so every card carries the
                        exposed rail. Read down the column, the rails say the
                        same thing the paragraph above says. */
-                    className="block prov prov-public"
+                    className="card prov prov-public"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <h2 className="min-w-0 text-lead font-medium">
