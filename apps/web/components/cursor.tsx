@@ -43,32 +43,30 @@ export function Cursor() {
     let ty = -999;
     let lx = -999;
     let ly = -999;
-    let rx = -999;
-    let ry = -999;
     let running = false;
     let idle = 0;
 
     const frame = () => {
-      // Exponential smoothing. The ring is roughly three times as eager as the
-      // light, which is what makes them separate under speed.
-      lx += (tx - lx) * 0.12;
-      ly += (ty - ly) * 0.12;
-      rx += (tx - rx) * 0.34;
-      ry += (ty - ry) * 0.34;
+      /* The light drifts; the ring does not.
+         Both used to be smoothed — the light at 0.12 and the ring at 0.34,
+         which is ~300ms and ~90ms to converge. Perceptible cursor lag starts
+         around 50ms, so the ring sat past the threshold and the whole PAGE read
+         as slow even at a clean 60fps. Frame times were never the problem; the
+         lag was designed in.
+
+         The ring now tracks the pointer exactly, so nothing near the cursor
+         ever trails it. Only the large ambient light drifts, at a rate fast
+         enough to feel attached rather than dragged. */
+      lx += (tx - lx) * 0.38;
+      ly += (ty - ly) * 0.38;
 
       l.style.setProperty("--mx", `${lx}px`);
       l.style.setProperty("--my", `${ly}px`);
-      r.style.setProperty("--rx2", `${rx}px`);
-      r.style.setProperty("--ry2", `${ry}px`);
 
-      // Stop the loop once everything has settled. An always-on rAF is a
+      // Stop the loop once the light has caught up. An always-on rAF is a
       // battery cost for nothing.
-      const settled =
-        Math.abs(tx - lx) < 0.4 &&
-        Math.abs(ty - ly) < 0.4 &&
-        Math.abs(tx - rx) < 0.4 &&
-        Math.abs(ty - ry) < 0.4;
-      if (settled && ++idle > 4) {
+      const settled = Math.abs(tx - lx) < 0.5 && Math.abs(ty - ly) < 0.5;
+      if (settled && ++idle > 2) {
         running = false;
         return;
       }
@@ -86,6 +84,10 @@ export function Cursor() {
     const move = (e: PointerEvent) => {
       tx = e.clientX;
       ty = e.clientY;
+      // The ring is written straight from the event — no smoothing, no waiting
+      // for a frame. This is the element the eye treats as the cursor.
+      r.style.setProperty("--rx2", `${tx}px`);
+      r.style.setProperty("--ry2", `${ty}px`);
       l.dataset.on = "1";
       r.dataset.on = "1";
       kick();
