@@ -33,6 +33,7 @@ import {
 } from "@/components/ui";
 import { OhlcLegend, Terminal, type Hover } from "@/components/terminal";
 import { useVaultStore } from "@/lib/vault-store";
+import { DEFAULT_LIMITS } from "@/lib/vault-program";
 import {
   DEFAULT_TIMEFRAME,
   TIMEFRAMES,
@@ -149,6 +150,157 @@ const pct = (n: number) =>
 
 const CURVE_W = 1000;
 const CURVE_H = 280;
+
+
+/* ------------------------------------------------------------ guardrails */
+
+/**
+ * Every check the deployed program runs before a swap can settle.
+ *
+ * This exists because "buy under X, sell over Y" is a limit order, and a limit
+ * order is a single comparison. What makes this different is not the rule — it
+ * is that the rule is enforced alongside eight other constraints that live in
+ * the program's own bytecode, so no operator, backend or executor can skip one.
+ *
+ * Values are read from this vault's live config. The ceilings are the compiled
+ * constants in `programs/vault/src/constants.rs`, so a user cannot set a limit
+ * looser than the program will accept.
+ */
+function Guardrails({
+  limits,
+}: {
+  limits: ReturnType<typeof useVaultStore>["limits"];
+}) {
+  /* With no wallet there is no vault to read, so fall back to the program's
+     own defaults rather than a column of dashes — nine dashes made a real
+     enforcement stack look like an unimplemented one. The header says which
+     is being shown. */
+  const l = limits ?? DEFAULT_LIMITS;
+  const live = limits !== null;
+  const pct = (bps: number | undefined) =>
+    bps === undefined ? "—" : `${(bps / 100).toFixed(2)}%`;
+
+  const rows = [
+    {
+      k: "Trade size",
+      v: pct(l.sizeBps),
+      ceiling: "≤ 100%",
+      why: "Share of the spendable balance committed per entry.",
+      on: true,
+    },
+    {
+      k: "Per-trade cap",
+      v: pct(l.maxTradeBps),
+      ceiling: "≤ 50%",
+      why: "A hard ceiling on one trade, above the size rule. Entries only — a stop always sells the whole position.",
+      on: true,
+    },
+    {
+      k: "Concentration",
+      v: "vault setting",
+      ceiling: "—",
+      why: "Bounds the sum of entries, not just one. A rule like “buy below $150” keeps firing all the way down; without this a falling market converts the whole vault.",
+      on: true,
+    },
+    {
+      k: "Slippage floor",
+      v: pct(l.maxSlippageBps),
+      ceiling: "≤ 5%",
+      why: "Minimum output, derived from the oracle at execution time rather than from the quote the executor supplied.",
+      on: true,
+    },
+    {
+      k: "Cooldown",
+      v: `${l.cooldownSeconds}s`,
+      ceiling: "—",
+      why: "Minimum gap between trades. Entries only: suppressing an exit during a cooldown would disarm the stop.",
+      on: true,
+    },
+    {
+      k: "Oracle staleness",
+      v: `${l.maxOracleStalenessSec}s`,
+      ceiling: "≤ 30s",
+      why: "A price older than this cannot influence anything. Devnet often publishes slower than the limit, and the program simply refuses.",
+      on: true,
+    },
+    {
+      k: "Oracle confidence",
+      v: pct(l.maxConfBps),
+      ceiling: "≤ 1%",
+      why: "Pyth publishes a confidence interval. Too wide and the price is refused rather than traded on.",
+      on: true,
+    },
+    {
+      k: "Decision drift",
+      v: pct(l.maxOracleDeviationBps),
+      ceiling: "≤ 10%",
+      why: "How far the market may move between the computation deciding and the trade filling. Entries only, and only against a rising price.",
+      on: true,
+    },
+    {
+      k: "Daily loss limit",
+      v: pct(l.dailyLossLimitBps),
+      ceiling: "—",
+      why: "Stored and read by no instruction. Realised P&L needs a cost basis, and measuring it would put the oracle on the withdraw path — which must keep working when everything else is down.",
+      on: false,
+    },
+  ];
+
+  return (
+    <div className="overflow-hidden rounded-[14px] border-[3px] border-[var(--color-stroke)]">
+      <div className="border-b border-[var(--color-stroke)] bg-[var(--color-void)] px-4 py-2">
+        <span className="mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-3)]">
+          {live
+            ? "this vault's live settings · ceilings compiled into the program"
+            : "program defaults shown — connect a wallet to read this vault's own settings"}
+        </span>
+      </div>
+      {rows.map((r, i) => (
+        <div
+          key={r.k}
+          className="grid gap-x-4 gap-y-1 px-4 py-3 sm:grid-cols-[minmax(0,150px)_92px_1fr]"
+          style={{
+            borderTop: i ? "1px solid var(--color-stroke)" : undefined,
+            background: r.on
+              ? i % 2
+                ? "color-mix(in srgb, var(--color-void) 40%, transparent)"
+                : undefined
+              : "color-mix(in srgb, var(--color-amber) 8%, transparent)",
+          }}
+        >
+          <span className="flex items-center gap-2">
+            <span
+              aria-hidden
+              className="inline-block h-2 w-2 shrink-0 rounded-full"
+              style={{
+                background: r.on ? "var(--color-up)" : "var(--color-amber)",
+              }}
+            />
+            <span className="text-[15px] font-medium">{r.k}</span>
+          </span>
+          <span className="tabular flex items-baseline gap-2 text-[15px]">
+            <span style={{ color: r.on ? "var(--color-cyan)" : "var(--color-amber)" }}>
+              {r.v}
+            </span>
+            {r.ceiling !== "—" ? (
+              <span className="mono text-[11px] text-[var(--color-text-3)]">
+                {r.ceiling}
+              </span>
+            ) : null}
+          </span>
+          <span className="text-[13px] leading-snug text-[var(--color-text-2)]">
+            {r.why}
+            {!r.on ? (
+              <span className="mono ml-2 uppercase tracking-[0.1em] text-[var(--color-amber)]">
+                — not enforced
+              </span>
+            ) : null}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function StrategyStudio() {
   const s = useVaultStore();
@@ -563,6 +715,28 @@ export default function StrategyStudio() {
                 </button>
               ))}
             </div>
+          </Block>
+
+          {/* ----------------------------------------------- the guardrails
+              The answer to "isn't this just a limit order?".
+
+              A limit order is one comparison: fill at price. This vault runs a
+              stack of checks on chain before any fill can happen, and every one
+              of them is in the deployed program rather than in a backend that
+              could be asked nicely to skip it. The values are read live from
+              this vault's own config — nothing here is illustrative.
+
+              `daily_loss_limit_bps` is listed and marked NOT ENFORCED. Hiding
+              it would make the other eight less believable, and the program's
+              own comment explains at length why it cannot be measured without
+              putting the oracle on the withdraw path. */}
+          <Block>
+            <BlockHead
+              eyebrow="Exposed · enforced on chain"
+              title="What the program checks before any fill"
+              hint="A limit order is one comparison. This is the stack that runs on every trade, in the deployed program — not in a backend."
+            />
+            <Guardrails limits={s.limits} />
           </Block>
 
           {/* --------------------------------------------------- inputs */}

@@ -891,19 +891,29 @@ html:not(.js) .reveal {
 /* Wallet-adapter modal, dragged into this register rather than shipping its
    purple default. Its own stylesheet also @imports a Google font, which the
    CSP blocks by design; the modal inherits our display face instead. */
+/* The wallet button.
+   It carried a 4px offset shadow and a 3px border inside a header sized for a
+   36px control, so it overhung the header's bottom rule and sat a few pixels
+   off the other items. Fixed height, 2px border, no offset shadow — the press
+   depth belongs to buttons inside the page, not to a control pinned in the
+   chrome. */
 .wallet-adapter-button-trigger {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
   background: transparent !important;
-  border: 3px solid var(--color-stroke) !important;
-  border-radius: 13px !important;
+  border: 2px solid var(--color-stroke) !important;
+  border-radius: 10px !important;
   font-family: var(--font-display) !important;
   font-size: var(--text-meta) !important;
   font-weight: 700 !important;
-  height: auto !important;
-  padding: 9px 16px !important;
+  line-height: 1 !important;
+  height: 38px !important;
+  padding: 0 16px !important;
   color: var(--color-text) !important;
-  box-shadow:
-    0 4px 0 0 var(--color-deep),
-    0 4px 0 2px var(--color-stroke) !important;
+  white-space: nowrap !important;
+  box-shadow: none !important;
+  transition: border-color 140ms var(--ease-swap), background 140ms var(--ease-swap) !important;
 }
 .wallet-adapter-modal-wrapper {
   background: var(--color-card) !important;
