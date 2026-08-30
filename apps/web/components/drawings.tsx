@@ -45,12 +45,17 @@ type XY = { x: number; y: number };
 
 const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 
+/* Annotation colours.
+   These are the drawing palette, not the semantic tokens — an annotation is
+   the user's own mark and carries no claim about visibility. They deliberately
+   avoid magenta, which means "never leaves the computation" everywhere else on
+   the site and must not become something a user can scribble with. */
 export const PALETTE = [
-  "var(--color-signal-hi)",
-  "var(--color-pos)",
-  "var(--color-neg)",
-  "var(--color-exposed)",
-  "var(--color-ink-soft)",
+  "var(--color-lime)",
+  "var(--color-cyan)",
+  "var(--color-up)",
+  "var(--color-down)",
+  "var(--color-amber)",
 ];
 
 const TOOLS: { id: Tool; label: string; hint: string; path: string }[] = [
@@ -282,6 +287,14 @@ export function DrawingLayer({
       onPointerCancel={onUp}
       className="absolute inset-x-0 top-0"
       style={{
+        /* Above the chart's own canvas.
+           lightweight-charts renders its canvases at `z-index: 2`, and this
+           layer had no z-index at all — so the canvas sat on top and swallowed
+           every pointer event before it could reach a handler here. Nothing was
+           ever drawn, which also made the colour swatches and the rectangle and
+           fibonacci tools look broken: they were fine, they just never received
+           a drag. */
+        zIndex: 3,
         // Bounded to the price pane: dragging across the RSI strip should not
         // begin a drawing that cannot be placed there.
         height: paneH || "100%",
@@ -501,7 +514,7 @@ function Shape({
         x2={end.x}
         y1={a.y}
         y2={end.y}
-        stroke={d.tool === "measure" ? (up ? "var(--color-pos)" : "var(--color-neg)") : stroke}
+        stroke={d.tool === "measure" ? (up ? "var(--color-up)" : "var(--color-down)") : stroke}
         strokeWidth={width}
         strokeDasharray={d.tool === "measure" ? "5 4" : undefined}
         style={{ pointerEvents: "none" }}
@@ -513,7 +526,7 @@ function Shape({
               cx={p.x}
               cy={p.y}
               r={3.5}
-              fill="var(--color-paper)"
+              fill="var(--color-void)"
               stroke={stroke}
               strokeWidth={1.5}
               style={{ pointerEvents: "none" }}
@@ -528,13 +541,13 @@ function Shape({
             width={108}
             height={22}
             rx={4}
-            fill="var(--color-panel)"
-            stroke={up ? "var(--color-pos)" : "var(--color-neg)"}
+            fill="var(--color-card)"
+            stroke={up ? "var(--color-up)" : "var(--color-down)"}
           />
           <text
             x={Math.min(a.x, b.x) + Math.abs(b.x - a.x) / 2}
             y={Math.min(a.y, b.y) + Math.abs(b.y - a.y) / 2 + 4}
-            fill={up ? "var(--color-pos)" : "var(--color-neg)"}
+            fill={up ? "var(--color-up)" : "var(--color-down)"}
             fontSize={10}
             fontFamily="var(--font-mono)"
             textAnchor="middle"
@@ -594,8 +607,8 @@ export function DrawingToolbar({
   }, [selected, onDelete, setTool]);
 
   return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-rule)] px-4 py-3">
-      <div className="flex items-center gap-0.5 rounded-full bg-[var(--color-panel)] p-1">
+    <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-stroke)] px-4 py-3">
+      <div className="flex items-center gap-0.5 rounded-full bg-[var(--color-card)] p-1">
         {TOOLS.map((t, i) => (
           <button
             key={t.id}
@@ -606,13 +619,13 @@ export function DrawingToolbar({
             className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
               tool === t.id
                 ? "text-[var(--color-on-signal)]"
-                : "text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
+                : "text-[var(--color-text-3)] hover:text-[var(--color-text)]"
             }`}
           >
             {tool === t.id ? (
               <motion.span
                 layoutId="tool-active"
-                className="absolute inset-0 rounded-full bg-[var(--color-signal)]"
+                className="absolute inset-0 rounded-full bg-[var(--color-lime)]"
                 transition={SPRINGS.snap}
               />
             ) : null}
@@ -651,16 +664,16 @@ export function DrawingToolbar({
               // selection reads on every theme rather than only on dark ones.
               boxShadow:
                 c === color
-                  ? `0 0 0 2px var(--color-panel), 0 0 0 3.5px ${c}`
+                  ? `0 0 0 2px var(--color-card), 0 0 0 3.5px ${c}`
                   : undefined,
               // @ts-expect-error CSS custom property passthrough
-              "--tw-ring-color": "var(--color-rule-strong)",
+              "--tw-ring-color": "var(--color-stroke)",
             }}
           />
         ))}
       </div>
 
-      <span className="hidden text-caption text-[var(--color-ink-faint)] lg:inline">
+      <span className="hidden text-[13px] text-[var(--color-text-3)] lg:inline">
         {active.hint}
       </span>
 
