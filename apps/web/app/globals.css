@@ -20,33 +20,38 @@
    ========================================================================= */
 
 @theme {
-  /* --- SURFACES. A 4-step depth ramp; --stroke is a 3px structural border,
-         not text, so it is graded for visibility (2.21:1 on card) not AA. --- */
-  --color-void: #0b0620;
-  --color-deep: #150b33;
-  --color-card: #1e1147;
-  --color-card-hi: #2a1a63;
-  --color-stroke: #5638be; /* 2.21:1 on card, 2.55:1 on void */
+  /* --- SURFACES. A 4-step neutral ramp, black rather than violet.
+         1.12:1 per step is not a taste call — it is the ceiling. Every step
+         lighter raises the surface under the accents, and at 1.14 the `down`
+         red drops to 4.30:1 on card-hi and fails AA. 1.12 keeps the worst
+         accent at 4.55 while still separating a card from the page. --- */
+  --color-void: #08090b;
+  --color-deep: #17181c; /* 1.12:1 over void */
+  --color-card: #212226; /* 1.12:1 over deep */
+  --color-card-hi: #2a2b2f; /* 1.12:1 over card */
+  --color-stroke: #53555d; /* 2.14:1 on card, 2.68:1 on void — a border, not text */
 
-  /* --- INK. Three tiers. Every tier clears AA on card-hi, the lightest
-         surface, so no tier can be misused. --- */
-  --color-text: #fff6fb; /* void 18.68 / card 16.17 / card-hi 13.90 */
-  --color-text-2: #b9a9e8; /* void  9.33 / card  8.08 / card-hi  6.94 */
-  --color-text-3: #9a8ad6; /* void  6.58 / card  5.69 / card-hi  4.89 */
+  /* --- INK. Three tiers, neutral now that the ground is. The bottom tier is
+         set against card-hi, the lightest surface, so it cannot be misused
+         anywhere. --- */
+  --color-text: #f4f6f8; /* void 18.39 / card 14.67 / card-hi 13.05 */
+  --color-text-2: #a8b0bd; /* void  9.12 / card  7.27 / card-hi  6.47 */
+  --color-text-3: #8e949e; /* void  6.53 / card  5.21 / card-hi  4.63 */
 
   /* --- THE ONE ACTION. Fill only, never body text. --- */
-  --color-lime: #c6ff4f; /* void on lime = 16.79:1 */
-  --color-on-lime: #0b0620;
+  --color-lime: #c6ff4f; /* void on lime = 16.90:1 */
+  --color-on-lime: #08090b;
   --color-lime-deep: #7fa82b; /* the pressed shadow under a lime button */
 
-  /* --- THE LOAD-BEARING PAIR. --- */
-  --color-cyan: #34e7f5; /* PUBLIC.  void 13.09 / card-hi 9.74 */
-  --color-magenta: #ff4fd8; /* HIDDEN.  void  6.94 / card-hi 5.16 */
-  --color-amber: #ffb020; /* UNKNOWN + caution + asterisk. void 10.82 */
+  /* --- THE LOAD-BEARING PAIR. Unchanged by the move to black: they carry
+         meaning, and black makes them louder rather than weaker. --- */
+  --color-cyan: #34e7f5; /* PUBLIC.  void 13.18 / card-hi 9.36 */
+  --color-magenta: #ff4fd8; /* HIDDEN.  void  6.98 / card-hi 4.96 */
+  --color-amber: #ffb020; /* UNKNOWN + caution + asterisk. void 10.89 */
 
   /* --- DIRECTION ON A NUMBER. Only ever this, only next to a triangle. --- */
-  --color-up: #2be08a; /* void 11.43 */
-  --color-down: #ff5470; /* void  6.36 */
+  --color-up: #2be08a; /* void 11.51 / card-hi 8.17 */
+  --color-down: #ff5470; /* void  6.41 / card-hi 4.55 — the tightest on the page */
 
   /* --- TYPE. Seven steps. The page never uses an eighth. Weight, tracking and
          line-height are bound to size so no component can invent one. --- */
@@ -283,7 +288,7 @@ samp,
   overflow: hidden;
   /* The deep base. Everything else layers on top of this. */
   background:
-    radial-gradient(140% 100% at 50% -20%, #241556 0%, #120a2c 46%, #08041a 100%);
+    radial-gradient(140% 100% at 50% -20%, #1a1d24 0%, #101116 46%, #050506 100%);
 }
 
 /* THE GRID FLOOR.
@@ -377,12 +382,12 @@ samp,
   background:
     radial-gradient(
       38% 38% at 22% 28%,
-      color-mix(in srgb, var(--color-magenta) 20%, transparent) 0%,
+      color-mix(in srgb, var(--color-magenta) 14%, transparent) 0%,
       transparent 68%
     ),
     radial-gradient(
       34% 34% at 78% 62%,
-      color-mix(in srgb, var(--color-cyan) 16%, transparent) 0%,
+      color-mix(in srgb, var(--color-cyan) 12%, transparent) 0%,
       transparent 66%
     );
   animation: drift 34s ease-in-out infinite alternate;
@@ -451,7 +456,7 @@ body::after {
   inset: 0;
   z-index: 9999;
   pointer-events: none;
-  opacity: 0.045;
+  opacity: 0.03;
   mix-blend-mode: overlay;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
 }
@@ -663,7 +668,7 @@ body::after {
     /* the dot-matrix strip — the second, non-colour channel */
     background-image: radial-gradient(
       circle,
-      rgba(11, 6, 32, 0.55) 1px,
+      rgba(8, 9, 11, 0.55) 1px,
       transparent 1.2px
     );
     background-size: 5px 5px;
